@@ -1,0 +1,3 @@
+[submodule "isla"]
+	path = isla
+	url = git@github.com:rems-project/isla.git
