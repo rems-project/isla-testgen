@@ -1,0 +1,11 @@
+/target
+/vendor
+**/*.rs.bk
+*~
+*.irx
+*.symtab
+/*.ir
+/Cargo.lock
+callgrind.*
+z3_problems
+.merlin
