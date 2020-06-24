@@ -130,7 +130,7 @@ fn isla_main() -> i32 {
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optflag("x", "hex", "parse instruction as hexadecimal opcode, rather than assembly");
-    opts.optopt("T", "tag-file", "parse instruction encodings from tag file", "<file>");
+    opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
     opts.optflag("", "events", "dump final events");
     opts.optflag("", "all-events", "dump events for every behaviour");
