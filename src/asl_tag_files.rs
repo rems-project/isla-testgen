@@ -254,7 +254,8 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
 }
 
 pub fn read_tag_file(file_name: &String, exclusions: &Vec<String>) -> Encodings {
-    let file = File::open(file_name).unwrap();
+    let file = File::open(file_name)
+        .expect(&format!("Unable to open tag file {}", file_name));
     let reader = BufReader::new(file);
     let mut lines = reader.lines().map(|l| l.unwrap());
     let mut encodings = Encodings::default();

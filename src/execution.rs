@@ -39,7 +39,7 @@ use isla_lib::error::ExecError;
 use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame};
 use isla_lib::ir::*;
-use isla_lib::log;
+use isla_lib::{log, log_from};
 use isla_lib::memory::Memory;
 use isla_lib::simplify::simplify;
 use isla_lib::simplify::write_events;
@@ -128,6 +128,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
 }
 
 fn postprocess<'ir, B: BV>(
+    tid: usize,
     _task_id: usize,
     local_frame: LocalFrame<'ir, B>,
     shared_state: &SharedState<'ir, B>,
@@ -135,6 +136,8 @@ fn postprocess<'ir, B: BV>(
     _events: &Vec<Event<B64>>,
 ) -> Result<(Frame<'ir, B>, Checkpoint<B>), String> {
     use isla_lib::smt::smtlib::{Def, Exp};
+
+    log_from!(tid, log::VERBOSE, "Postprocessing");
 
     // Ensure the new PC can be placed in memory
     // (currently this is used to prevent an exception)
@@ -148,11 +151,13 @@ fn postprocess<'ir, B: BV>(
     let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, false, &mut solver);
     solver.add(Def::Assert(pc_constraint));
 
-    match solver.check_sat() {
-        SmtResult::Sat => return Ok((freeze_frame(&local_frame), smt::checkpoint(&mut solver))),
-        SmtResult::Unsat => return Err(String::from("unsatisfiable")),
-        SmtResult::Unknown => return Err(String::from("solver returned unknown")),
-    }
+    let result = match solver.check_sat() {
+        SmtResult::Sat => Ok((freeze_frame(&local_frame), smt::checkpoint(&mut solver))),
+        SmtResult::Unsat => Err(String::from("unsatisfiable")),
+        SmtResult::Unknown => Err(String::from("solver returned unknown")),
+    };
+    log_from!(tid, log::VERBOSE, "Postprocessing complete");
+    result
 }
 
 // Get a single opcode for debugging
@@ -416,7 +421,8 @@ pub fn run_model_instruction<'ir>(
         vec![task],
         &shared_state,
         queue.clone(),
-        &move |_, task_id, result, shared_state, solver, collected| {
+        &move |tid, task_id, result, shared_state, solver, collected| {
+            log_from!(tid, log::VERBOSE, "Collecting");
             let mut events = simplify(solver.trace());
             let events: Vec<Event<B64>> = events.drain(..).map({ |ev| ev.clone() }).collect();
             match result {
@@ -427,18 +433,25 @@ pub fn run_model_instruction<'ir>(
                     } else {
                         match val {
                             Val::Unit => {
-                                collected.push((postprocess(task_id, frame, shared_state, solver, &events), events))
+                                collected.push((postprocess(tid, task_id, frame, shared_state, solver, &events), events))
                             }
                             _ =>
                             // Anything else is an error!
                             {
+                                log_from!(tid, log::VERBOSE, format!("Unexpected footprint return value: {:?}", val));
                                 collected.push((Err(format!("Unexpected footprint return value: {:?}", val)), events))
                             }
                         }
                     }
                 }
-                Err(ExecError::Dead) => collected.push((Err(String::from("dead")), events)),
-                Err(err) => collected.push((Err(format!("Error {:?}", err)), events)),
+                Err(ExecError::Dead) => {
+                    log_from!(tid, log::VERBOSE, "dead");
+                    collected.push((Err(String::from("dead")), events))
+                }
+                Err(err) => {
+                    log_from!(tid, log::VERBOSE, format!("Error {:?}", err));
+                    collected.push((Err(format!("Error {:?}", err)), events))
+                }
             }
         },
     );
