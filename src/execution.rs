@@ -40,7 +40,7 @@ use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame};
 use isla_lib::ir::*;
 use isla_lib::{log, log_from};
-use isla_lib::memory::Memory;
+use isla_lib::memory::{Memory, SmtKind};
 use isla_lib::simplify::simplify;
 use isla_lib::simplify::write_events;
 use isla_lib::smt;
@@ -66,6 +66,7 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp 
 
 #[derive(Debug, Clone)]
 struct SeqMemory {
+    read_ifetch: EnumMember,
     memory_var: Sym,
 }
 
@@ -75,7 +76,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         regions: &[isla_lib::memory::Region<B>],
         solver: &mut Solver<B>,
         value: &Val<B>,
-        _read_kind: &Val<B>,
+        read_kind: &Val<B>,
         address: &Val<B>,
         bytes: u32,
     ) {
@@ -88,7 +89,11 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             Box::new(read_exp),
             Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
         )));
-        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, false, solver);
+        let kind = match read_kind {
+            Val::Enum(e) => if *e == self.read_ifetch { SmtKind::ReadInstr } else { SmtKind::ReadData },
+            _ => SmtKind::ReadData
+        };
+        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver);
         solver.add(Def::Assert(address_constraint));
     }
 
@@ -122,7 +127,8 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         }
         self.memory_var = solver.fresh();
         solver.add(Def::DefineConst(self.memory_var, mem_exp));
-        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, true, solver);
+        let kind = SmtKind::WriteData;
+        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver);
         solver.add(Def::Assert(address_constraint));
     }
 }
@@ -148,7 +154,7 @@ fn postprocess<'ir, B: BV>(
         UVal::Init(Val::Bits(b)) => Exp::Bits64(b.lower_u64(), b.len()),
         _ => panic!("Bad PC value {:?}", pc),
     };
-    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, false, &mut solver);
+    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver);
     solver.add(Def::Assert(pc_constraint));
 
     let result = match solver.check_sat() {
@@ -222,8 +228,12 @@ pub fn setup_init_regs<'ir>(
     }
 
     let memory = solver.fresh();
-    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B64>> = Box::new(SeqMemory { memory_var: memory });
+    let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
+    let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
+    let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
+    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B64>> = Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory });
     local_frame.memory_mut().set_client_info(memory_info);
+
     solver.add(smtlib::Def::DeclareConst(
         memory,
         smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
