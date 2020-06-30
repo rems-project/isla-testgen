@@ -4,18 +4,18 @@
 // Copyright (c) 2020 Alasdair Armstrong
 //
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-// 
+//
 // 1. Redistributions of source code must retain the above copyright
 // notice, this list of conditions and the following disclaimer.
-// 
+//
 // 2. Redistributions in binary form must reproduce the above copyright
 // notice, this list of conditions and the following disclaimer in the
 // documentation and/or other materials provided with the distribution.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 // "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 // LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -187,7 +187,7 @@ pub fn interrogate_model(
     log!(log::VERBOSE, format!("Model: {:?}", model));
 
     let mut events = isla_lib::simplify::simplify(solver.trace());
-    let events: Vec<Event<B64>> = events.drain(..).map({ |ev| ev.clone() }).rev().collect();
+    let events: Vec<Event<B64>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
 
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
@@ -250,36 +250,38 @@ pub fn interrogate_model(
                 }
             }
             Event::ReadReg(reg, accessors, value) => {
-                let mut process_read_bits64 =
-                    |_sz: u32, accessors: &Vec<Accessor>, value: &Val<B64>, skipped: &mut HashSet<_>| {
-                        let key = (*reg, accessors.clone());
-                        if skipped.contains(&key) {
-                            return ();
-                        };
-                        if init_complete {
-                            let val = get_model_val(&mut model, value).expect("get_model_val");
-                            if let None = current_registers.insert(key.clone(), (true, val)) {
-                                match val {
-                                    Some(val) => {
-                                        initial_registers.insert(key, val);
-                                    }
-                                    None => eprintln!("Ambivalent read of register {}", regacc_to_str(shared_state, &key)),
+                let mut process_read_bits64 = |_sz: u32,
+                                               accessors: &Vec<Accessor>,
+                                               value: &Val<B64>,
+                                               skipped: &mut HashSet<_>| {
+                    let key = (*reg, accessors.clone());
+                    if skipped.contains(&key) {
+                        return ();
+                    };
+                    if init_complete {
+                        let val = get_model_val(&mut model, value).expect("get_model_val");
+                        if let None = current_registers.insert(key.clone(), (true, val)) {
+                            match val {
+                                Some(val) => {
+                                    initial_registers.insert(key, val);
                                 }
-                            }
-                        } else {
-                            // If we see a symbolic read during initialisation before a write,
-                            // remember it in case it gets written back - it may be a field that
-                            // hasn't been changed.
-                            match value {
-                                Val::Symbolic(var) => {
-                                    if !current_registers.contains_key(&key) {
-                                        symbolic_init_registers.insert(key, *var);
-                                    }
-                                }
-                                _ => ()
+                                None => eprintln!("Ambivalent read of register {}", regacc_to_str(shared_state, &key)),
                             }
                         }
-                    };
+                    } else {
+                        // If we see a symbolic read during initialisation before a write,
+                        // remember it in case it gets written back - it may be a field that
+                        // hasn't been changed.
+                        match value {
+                            Val::Symbolic(var) => {
+                                if !current_registers.contains_key(&key) {
+                                    symbolic_init_registers.insert(key, *var);
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                };
                 let mut process_read_unsupported =
                     |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B64>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
@@ -313,14 +315,13 @@ pub fn interrogate_model(
             Event::WriteReg(reg, accessors, value) => {
                 let mut process_write = |_sz: u32, accessors: &Vec<Accessor>, value: &Val<B64>, _: &mut ()| {
                     let key = (*reg, accessors.clone());
-                    let record = init_complete ||
-                        match value {
-                            Val::Symbolic(new_var) =>
-                                match symbolic_init_registers.get(&key) {
-                                    Some(old_var) => old_var != new_var,
-                                    _ => true
-                                }
-                            _ => true
+                    let record = init_complete
+                        || match value {
+                            Val::Symbolic(new_var) => match symbolic_init_registers.get(&key) {
+                                Some(old_var) => old_var != new_var,
+                                _ => true,
+                            },
+                            _ => true,
                         };
                     if record {
                         let val = get_model_val(&mut model, value).expect("get_model_val");

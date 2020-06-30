@@ -4,18 +4,18 @@
 // Copyright (c) 2020 Alasdair Armstrong
 //
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-// 
+//
 // 1. Redistributions of source code must retain the above copyright
 // notice, this list of conditions and the following disclaimer.
-// 
+//
 // 2. Redistributions in binary form must reproduce the above copyright
 // notice, this list of conditions and the following disclaimer in the
 // documentation and/or other materials provided with the distribution.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 // "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 // LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -141,8 +141,7 @@ fn isla_main() -> i32 {
     let CommonOpts { num_threads, mut arch, symtab, isa_config } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
-    let max_retries = matches.opt_get_default("max-retries", 10)
-        .expect("Bad max-retries argument");
+    let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");
 
     let exclusions = matches.opt_strs("exclude");
 
@@ -243,7 +242,7 @@ fn isla_main() -> i32 {
         use isla_lib::simplify::simplify;
         let trace = checkpoint.trace().as_ref().expect("No trace!");
         let mut events = simplify(trace);
-        let events: Vec<Event<B64>> = events.drain(..).map({ |ev| ev.clone() }).rev().collect();
+        let events: Vec<Event<B64>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
         write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
     }
 

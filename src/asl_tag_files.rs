@@ -3,18 +3,18 @@
 // Copyright (c) 2020 Brian Campbell
 //
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-// 
+//
 // 1. Redistributions of source code must retain the above copyright
 // notice, this list of conditions and the following disclaimer.
-// 
+//
 // 2. Redistributions in binary form must reproduce the above copyright
 // notice, this list of conditions and the following disclaimer in the
 // documentation and/or other materials provided with the distribution.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 // "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 // LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -81,13 +81,12 @@ struct Field {
     pattern: String,
 }
 
-
 impl FromStr for Field {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         lazy_static! {
-            static ref PATTERN : Regex = Regex::new(r"^[01x!()]+$").unwrap();
+            static ref PATTERN: Regex = Regex::new(r"^[01x!()]+$").unwrap();
         }
 
         let components: Vec<&str> = s.splitn(3, ' ').collect();
@@ -107,7 +106,7 @@ impl FromStr for Field {
             if PATTERN.is_match(components[1]) {
                 components[1].to_string()
             } else {
-                "x".repeat((high-low+1) as usize)
+                "x".repeat((high - low + 1) as usize)
             }
         };
         Ok(Field { high, low, name, pattern })
@@ -233,7 +232,7 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
                 bits_found += field.high - field.low + 1;
                 patterns.push(field);
             }
-            None => return Err(format!("End of file during diagram for {}", name))
+            None => return Err(format!("End of file during diagram for {}", name)),
         }
     }
     if bits_found > 32 {
@@ -245,7 +244,7 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
         if field.low != high {
             return Err(format!("Missing bit {} in diagram for {}", high, name));
         }
-        high = field.high+1;
+        high = field.high + 1;
     }
     let name = name.to_string();
     let diagram = Diagram { name, patterns };
@@ -254,8 +253,7 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
 }
 
 pub fn read_tag_file(file_name: &String, exclusions: &Vec<String>) -> Encodings {
-    let file = File::open(file_name)
-        .expect(&format!("Unable to open tag file {}", file_name));
+    let file = File::open(file_name).expect(&format!("Unable to open tag file {}", file_name));
     let reader = BufReader::new(file);
     let mut lines = reader.lines().map(|l| l.unwrap());
     let mut encodings = Encodings::default();

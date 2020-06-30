@@ -4,18 +4,18 @@
 // Copyright (c) 2020 Alasdair Armstrong
 //
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-// 
+//
 // 1. Redistributions of source code must retain the above copyright
 // notice, this list of conditions and the following disclaimer.
-// 
+//
 // 2. Redistributions in binary form must reproduce the above copyright
 // notice, this list of conditions and the following disclaimer in the
 // documentation and/or other materials provided with the distribution.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 // "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 // LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -39,7 +39,6 @@ use isla_lib::error::ExecError;
 use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame};
 use isla_lib::ir::*;
-use isla_lib::{log, log_from};
 use isla_lib::memory::{Memory, SmtKind};
 use isla_lib::simplify::simplify;
 use isla_lib::simplify::write_events;
@@ -47,6 +46,7 @@ use isla_lib::smt;
 use isla_lib::smt::smtlib;
 use isla_lib::smt::{Checkpoint, Event, Model, SmtResult, Solver, Sym};
 use isla_lib::zencode;
+use isla_lib::{log, log_from};
 
 fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp {
     use smtlib::Exp;
@@ -90,8 +90,14 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
         )));
         let kind = match read_kind {
-            Val::Enum(e) => if *e == self.read_ifetch { SmtKind::ReadInstr } else { SmtKind::ReadData },
-            _ => SmtKind::ReadData
+            Val::Enum(e) => {
+                if *e == self.read_ifetch {
+                    SmtKind::ReadInstr
+                } else {
+                    SmtKind::ReadData
+                }
+            }
+            _ => SmtKind::ReadData,
         };
         let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver);
         solver.add(Def::Assert(address_constraint));
@@ -231,7 +237,8 @@ pub fn setup_init_regs<'ir>(
     let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
     let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
-    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B64>> = Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory });
+    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B64>> =
+        Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory });
     local_frame.memory_mut().set_client_info(memory_info);
 
     solver.add(smtlib::Def::DeclareConst(
@@ -396,10 +403,8 @@ pub fn setup_opcode(
             Box::new(Exp::Bits64(opcode.bits & opcode_mask as u64, opcode.len)),
         )));
     } else {
-        solver.add(Def::Assert(Exp::Eq(
-            Box::new(Exp::Var(opcode_var)),
-            Box::new(Exp::Bits64(opcode.bits, opcode.len)),
-        )));
+        solver
+            .add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(Exp::Bits64(opcode.bits, opcode.len)))));
     }
     let read_exp = smt_value(&read_val).unwrap();
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(read_exp))));
@@ -434,7 +439,7 @@ pub fn run_model_instruction<'ir>(
         &move |tid, task_id, result, shared_state, solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             let mut events = simplify(solver.trace());
-            let events: Vec<Event<B64>> = events.drain(..).map({ |ev| ev.clone() }).collect();
+            let events: Vec<Event<B64>> = events.drain(..).map(|ev| ev.clone()).collect();
             match result {
                 Ok((val, frame)) => {
                     if let Some((ex_val, ex_loc)) = frame.get_exception() {
@@ -442,9 +447,8 @@ pub fn run_model_instruction<'ir>(
                         collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
                     } else {
                         match val {
-                            Val::Unit => {
-                                collected.push((postprocess(tid, task_id, frame, shared_state, solver, &events), events))
-                            }
+                            Val::Unit => collected
+                                .push((postprocess(tid, task_id, frame, shared_state, solver, &events), events)),
                             _ =>
                             // Anything else is an error!
                             {
