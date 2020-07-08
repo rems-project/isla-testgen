@@ -34,7 +34,7 @@ use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
 
-use isla_lib::concrete::{bitvector64::B64, BV};
+use isla_lib::concrete::BV;
 use isla_lib::error::ExecError;
 use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame};
@@ -145,7 +145,7 @@ fn postprocess<'ir, B: BV>(
     local_frame: LocalFrame<'ir, B>,
     shared_state: &SharedState<'ir, B>,
     mut solver: Solver<B>,
-    _events: &Vec<Event<B64>>,
+    _events: &Vec<Event<B>>,
 ) -> Result<(Frame<'ir, B>, Checkpoint<B>), String> {
     use isla_lib::smt::smtlib::{Def, Exp};
 
@@ -173,7 +173,7 @@ fn postprocess<'ir, B: BV>(
 }
 
 // Get a single opcode for debugging
-fn get_opcode(checkpoint: Checkpoint<B64>, opcode_var: Sym) -> Result<u32, String> {
+fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, String> {
     let cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
@@ -198,11 +198,11 @@ pub enum RegSource {
     Uninit,
 }
 
-pub fn setup_init_regs<'ir>(
-    shared_state: &SharedState<'ir, B64>,
-    frame: Frame<'ir, B64>,
-    checkpoint: Checkpoint<B64>,
-) -> (Frame<'ir, B64>, Checkpoint<B64>, Vec<(String, RegSource)>) {
+pub fn setup_init_regs<'ir, B: BV>(
+    shared_state: &SharedState<'ir, B>,
+    frame: Frame<'ir, B>,
+    checkpoint: Checkpoint<B>,
+) -> (Frame<'ir, B>, Checkpoint<B>, Vec<(String, RegSource)>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
@@ -227,7 +227,8 @@ pub fn setup_init_regs<'ir>(
                 inits.push((reg, RegSource::Symbolic(*var)));
             }
             UVal::Init(Val::Bits(bits)) => {
-                inits.push((reg, RegSource::Concrete(bits.bits)));
+                let rsrc = RegSource::Concrete(bits.try_into().expect(&format!("Value {} for register {} too large", bits, reg)));
+                inits.push((reg, rsrc));
             }
             _ => panic!("Bad value for register {} in setup", reg),
         }
@@ -237,7 +238,7 @@ pub fn setup_init_regs<'ir>(
     let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
     let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
-    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B64>> =
+    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
         Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory });
     local_frame.memory_mut().set_client_info(memory_info);
 
@@ -249,7 +250,7 @@ pub fn setup_init_regs<'ir>(
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver), inits)
 }
 
-pub fn regs_for_state<'ir>(shared_state: &SharedState<'ir, B64>, frame: Frame<'ir, B64>) -> Vec<(String, RegSource)> {
+pub fn regs_for_state<'ir, B: BV>(shared_state: &SharedState<'ir, B>, frame: Frame<'ir, B>) -> Vec<(String, RegSource)> {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let mut regs: Vec<String> = (0..31).map(|r| format!("R{}", r)).collect();
     let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| r.to_string()).collect();
@@ -269,7 +270,8 @@ pub fn regs_for_state<'ir>(shared_state: &SharedState<'ir, B64>, frame: Frame<'i
                 reg_sources.push((reg, RegSource::Symbolic(*var)));
             }
             UVal::Init(Val::Bits(bits)) => {
-                reg_sources.push((reg, RegSource::Concrete(bits.bits)));
+                let rsrc = RegSource::Concrete(bits.try_into().expect(&format!("Value {} for register {} too large", bits, reg)));
+                reg_sources.push((reg, rsrc));
             }
             _ => panic!("Bad value for register {} in setup", reg),
         }
@@ -278,7 +280,7 @@ pub fn regs_for_state<'ir>(shared_state: &SharedState<'ir, B64>, frame: Frame<'i
 }
 
 // Report final model details
-pub fn interrogate_model<'i, V>(checkpoint: Checkpoint<B64>, vars: V) -> Result<(), String>
+pub fn interrogate_model<'i, B: BV, V>(checkpoint: Checkpoint<B>, vars: V) -> Result<(), String>
 where
     V: Iterator<Item = &'i (String, RegSource)>,
 {
@@ -361,13 +363,13 @@ pub fn init_model<'ir, B: BV>(
     (frame, post_init_checkpoint)
 }
 
-pub fn setup_opcode(
-    shared_state: &SharedState<B64>,
-    frame: &Frame<B64>,
-    opcode: B64,
+pub fn setup_opcode<B: BV>(
+    shared_state: &SharedState<B>,
+    frame: &Frame<B>,
+    opcode: B,
     opcode_mask: Option<u32>,
-    prev_checkpoint: Checkpoint<B64>,
-) -> (Sym, Checkpoint<B64>) {
+    prev_checkpoint: Checkpoint<B>,
+) -> (Sym, Checkpoint<B>) {
     use isla_lib::primop::smt_value;
     use isla_lib::smt::smtlib::{Def, Exp, Ty};
     use isla_lib::smt::*;
@@ -400,11 +402,11 @@ pub fn setup_opcode(
     if let Some(opcode_mask) = opcode_mask {
         solver.add(Def::Assert(Exp::Eq(
             Box::new(Exp::Bvand(Box::new(Exp::Var(opcode_var)), Box::new(Exp::Bits64(opcode_mask as u64, 32)))),
-            Box::new(Exp::Bits64(opcode.bits & opcode_mask as u64, opcode.len)),
+            Box::new(Exp::Bits64(opcode.try_into().unwrap() & opcode_mask as u64, opcode.len())),
         )));
     } else {
         solver
-            .add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(Exp::Bits64(opcode.bits, opcode.len)))));
+            .add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(Exp::Bits64(opcode.try_into().unwrap(), opcode.len())))));
     }
     let read_exp = smt_value(&read_val).unwrap();
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(read_exp))));
@@ -412,14 +414,14 @@ pub fn setup_opcode(
     (opcode_var, checkpoint(&mut solver))
 }
 
-pub fn run_model_instruction<'ir>(
+pub fn run_model_instruction<'ir, B: BV>(
     num_threads: usize,
-    shared_state: &SharedState<'ir, B64>,
-    frame: &Frame<'ir, B64>,
-    checkpoint: Checkpoint<B64>,
+    shared_state: &SharedState<'ir, B>,
+    frame: &Frame<'ir, B>,
+    checkpoint: Checkpoint<B>,
     opcode_var: Sym,
     dump_events: bool,
-) -> Vec<(Frame<'ir, B64>, Checkpoint<B64>)> {
+) -> Vec<(Frame<'ir, B>, Checkpoint<B>)> {
     let function_id = shared_state.symtab.lookup("zStep_CPU");
     let (args, _, instrs) = shared_state.functions.get(&function_id).unwrap();
 
@@ -439,7 +441,7 @@ pub fn run_model_instruction<'ir>(
         &move |tid, task_id, result, shared_state, solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             let mut events = simplify(solver.trace());
-            let events: Vec<Event<B64>> = events.drain(..).map(|ev| ev.clone()).collect();
+            let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).collect();
             match result {
                 Ok((val, frame)) => {
                     if let Some((ex_val, ex_loc)) = frame.get_exception() {
@@ -487,7 +489,7 @@ pub fn run_model_instruction<'ir>(
                 if dump_events {
                     let stdout = std::io::stderr();
                     let mut handle = stdout.lock();
-                    let events: Vec<Event<B64>> = events.drain(..).rev().collect();
+                    let events: Vec<Event<B>> = events.drain(..).rev().collect();
                     write_events(&mut handle, &events, &shared_state.symtab);
                 }
                 result.push((new_frame, new_checkpoint));
@@ -499,7 +501,7 @@ pub fn run_model_instruction<'ir>(
                 if dump_events {
                     let stdout = std::io::stderr();
                     let mut handle = stdout.lock();
-                    let events: Vec<Event<B64>> = events.drain(..).rev().collect();
+                    let events: Vec<Event<B>> = events.drain(..).rev().collect();
                     write_events(&mut handle, &events, &shared_state.symtab);
                 }
             }
@@ -512,11 +514,11 @@ pub fn run_model_instruction<'ir>(
 
 // Find a couple of scratch registers for the harness, and add a branch to one
 // at the end of the test.
-pub fn finalize(
-    shared_state: &SharedState<B64>,
-    frame: &Frame<B64>,
-    checkpoint: Checkpoint<B64>,
-) -> (u32, u32, Checkpoint<B64>) {
+pub fn finalize<B: BV>(
+    shared_state: &SharedState<B>,
+    frame: &Frame<B>,
+    checkpoint: Checkpoint<B>,
+) -> (u32, u32, Checkpoint<B>) {
     // Find a couple of unused scratch registers for the harness
     let trace = checkpoint.trace().as_ref().expect("No trace!");
     let mut events = simplify(trace);
@@ -542,7 +544,7 @@ pub fn finalize(
 
     // Add branch instruction at the end of the sequence
     let opcode: u32 = 0xd61f0000 | (*exit_register << 5); // br exit_register
-    let (_, new_checkpoint) = setup_opcode(shared_state, frame, B64::from_u32(opcode), None, checkpoint);
+    let (_, new_checkpoint) = setup_opcode(shared_state, frame, B::from_u32(opcode), None, checkpoint);
 
     (*entry_register, *exit_register, new_checkpoint)
 }

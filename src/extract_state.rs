@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
 use std::ops::Range;
 
-use isla_lib::concrete::bitvector64::B64;
+use isla_lib::concrete::BV;
 use isla_lib::error::ExecError;
 use isla_lib::ir;
 use isla_lib::ir::{Name, Ty, Val};
@@ -43,10 +43,10 @@ use isla_lib::smt;
 use isla_lib::smt::smtlib::Exp;
 use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver, Sym};
 
-fn get_model_val(model: &mut Model<B64>, val: &Val<B64>) -> Result<Option<B64>, ExecError> {
+fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<B>, ExecError> {
     let exp = smt_value(val)?;
     match model.get_exp(&exp)? {
-        Some(Exp::Bits64(bits, len)) => Ok(Some(B64 { len, bits })),
+        Some(Exp::Bits64(bits, len)) => Ok(Some(B::new(bits, len))),
         None => Ok(None),
         Some(exp) => Err(ExecError::Z3Error(format!("Bad model value {:?}", exp))),
     }
@@ -63,7 +63,7 @@ pub struct PrePostStates {
     pub post_nzcv_value: u32,
 }
 
-fn regacc_to_str(shared_state: &ir::SharedState<B64>, regacc: &(Name, Vec<Accessor>)) -> String {
+fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<Accessor>)) -> String {
     let (reg, acc) = regacc;
     let reg_str = shared_state.symtab.to_str(*reg);
     let fields = acc.iter().map(|Accessor::Field(a)| shared_state.symtab.to_str(*a));
@@ -103,12 +103,12 @@ where
     m
 }
 
-fn apply_accessors(
-    shared_state: &ir::SharedState<B64>,
+fn apply_accessors<B: BV>(
+    shared_state: &ir::SharedState<B>,
     start_ty: &Ty<Name>,
     accessors: &Vec<Accessor>,
-    start_value: &Val<B64>,
-) -> (Ty<Name>, Val<B64>) {
+    start_value: &Val<B>,
+) -> (Ty<Name>, Val<B>) {
     let mut ty = start_ty;
     let mut value = start_value;
     for Accessor::Field(field) in accessors {
@@ -131,17 +131,17 @@ fn or_pair(x: &mut (u32, u32), (y0, y1): (u32, u32)) {
     x.1 |= y1;
 }
 
-fn iter_b64_types<F, G, T>(
-    shared_state: &ir::SharedState<B64>,
+fn iter_b64_types<F, G, T, B:BV>(
+    shared_state: &ir::SharedState<B>,
     f: &mut F,
     g: &mut G,
     ty: &Ty<Name>,
     accessors: &mut Vec<Accessor>,
-    v: &Val<B64>,
+    v: &Val<B>,
     r: &mut T,
 ) where
-    F: FnMut(u32, &Vec<Accessor>, &Val<B64>, &mut T),
-    G: FnMut(&Ty<Name>, &Vec<Accessor>, &Val<B64>, &mut T),
+    F: FnMut(u32, &Vec<Accessor>, &Val<B>, &mut T),
+    G: FnMut(&Ty<Name>, &Vec<Accessor>, &Val<B>, &mut T),
 {
     match ty {
         Ty::Bits(sz) if *sz <= 64 => f(*sz, accessors, v, r),
@@ -160,9 +160,9 @@ fn iter_b64_types<F, G, T>(
     }
 }
 
-pub fn interrogate_model(
-    checkpoint: Checkpoint<B64>,
-    shared_state: &ir::SharedState<B64>,
+pub fn interrogate_model<B: BV>(
+    checkpoint: Checkpoint<B>,
+    shared_state: &ir::SharedState<B>,
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
@@ -187,13 +187,13 @@ pub fn interrogate_model(
     log!(log::VERBOSE, format!("Model: {:?}", model));
 
     let mut events = isla_lib::simplify::simplify(solver.trace());
-    let events: Vec<Event<B64>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
+    let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
 
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     // TODO: field accesses
-    let mut initial_registers: HashMap<(Name, Vec<Accessor>), B64> = HashMap::new();
-    let mut current_registers: HashMap<(Name, Vec<Accessor>), (bool, Option<B64>)> = HashMap::new();
+    let mut initial_registers: HashMap<(Name, Vec<Accessor>), B> = HashMap::new();
+    let mut current_registers: HashMap<(Name, Vec<Accessor>), (bool, Option<B>)> = HashMap::new();
     let mut symbolic_init_registers: HashMap<(Name, Vec<Accessor>), Sym> = HashMap::new();
     let mut skipped_register_reads: HashSet<(Name, Vec<Accessor>)> = HashSet::new();
 
@@ -202,7 +202,7 @@ pub fn interrogate_model(
     // modified by the test harness.
     let mut init_complete = false;
 
-    let is_ifetch = |val: &Val<B64>| match val {
+    let is_ifetch = |val: &Val<B>| match val {
         Val::Enum(ir::EnumMember { enum_id, member }) => *enum_id == read_kind_id && *member == *read_kind_pos,
         _ => false,
     };
@@ -215,10 +215,10 @@ pub fn interrogate_model(
                 let val = get_model_val(&mut model, value)?;
                 match val {
                     Some(val) => {
-                        let vals = val.bits.to_le_bytes();
-                        if 8 * *bytes == val.len {
+                        let vals = val.to_le_bytes();
+                        if 8 * *bytes == val.len() {
                             for i in 0..*bytes {
-                                let byte_address = address.bits + i as u64;
+                                let byte_address = address.try_into()? + i as u64;
                                 let byte_val = vals[i as usize];
                                 if current_memory.insert(byte_address, Some(byte_val)).is_none() {
                                     initial_memory.insert(byte_address, byte_val);
@@ -228,7 +228,7 @@ pub fn interrogate_model(
                             return Err(ExecError::Type("Memory read had wrong number of bytes"));
                         }
                     }
-                    None => eprintln!("Ambivalent read of {} bytes from {:x}", bytes, address.bits),
+                    None => eprintln!("Ambivalent read of {} bytes from {:x}", bytes, address),
                 }
             }
             Event::WriteMem { value: _, write_kind: _, address, data, bytes } => {
@@ -236,15 +236,15 @@ pub fn interrogate_model(
                 let val = get_model_val(&mut model, data)?;
                 match val {
                     Some(val) => {
-                        let vals = val.bits.to_le_bytes();
+                        let vals = val.to_le_bytes();
                         for i in 0..*bytes {
-                            current_memory.insert(address.bits + i as u64, Some(vals[i as usize]));
+                            current_memory.insert(address.try_into()? + i as u64, Some(vals[i as usize]));
                         }
                     }
                     None => {
-                        eprintln!("Ambivalent write of {} bytes to {:x}", bytes, address.bits);
+                        eprintln!("Ambivalent write of {} bytes to {:x}", bytes, address);
                         for i in 0..*bytes {
-                            current_memory.insert(address.bits + i as u64, None);
+                            current_memory.insert(address.try_into()? + i as u64, None);
                         }
                     }
                 }
@@ -252,7 +252,7 @@ pub fn interrogate_model(
             Event::ReadReg(reg, accessors, value) => {
                 let mut process_read_bits64 = |_sz: u32,
                                                accessors: &Vec<Accessor>,
-                                               value: &Val<B64>,
+                                               value: &Val<B>,
                                                skipped: &mut HashSet<_>| {
                     let key = (*reg, accessors.clone());
                     if skipped.contains(&key) {
@@ -283,7 +283,7 @@ pub fn interrogate_model(
                     }
                 };
                 let mut process_read_unsupported =
-                    |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B64>, skipped: &mut HashSet<_>| {
+                    |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
                         if skipped.contains(&key) || !init_complete {
                             return ();
@@ -313,7 +313,7 @@ pub fn interrogate_model(
                 }
             }
             Event::WriteReg(reg, accessors, value) => {
-                let mut process_write = |_sz: u32, accessors: &Vec<Accessor>, value: &Val<B64>, _: &mut ()| {
+                let mut process_write = |_sz: u32, accessors: &Vec<Accessor>, value: &Val<B>, _: &mut ()| {
                     let key = (*reg, accessors.clone());
                     let record = init_complete
                         || match value {
@@ -329,7 +329,7 @@ pub fn interrogate_model(
                     }
                 };
                 let mut process_unsupported =
-                    |_ty: &Ty<Name>, _accessors: &Vec<Accessor>, _value: &Val<B64>, _: &mut ()| ();
+                    |_ty: &Ty<Name>, _accessors: &Vec<Accessor>, _value: &Val<B>, _: &mut ()| ();
                 match register_types.get(reg) {
                     Some(ty) => {
                         let (assigned_ty, assigned_value) = apply_accessors(shared_state, ty, accessors, &value);
@@ -414,15 +414,16 @@ pub fn interrogate_model(
         if name.starts_with("zR") {
             let reg_str = &name[2..];
             if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
-                pre_gprs.push((reg_num, value.bits));
+                pre_gprs.push((reg_num, value.try_into()?));
             }
         } else if name == "zPSTATE" {
             if let &[Accessor::Field(id)] = accessor.as_slice() {
+                let bits: u32 = value.try_into()? as u32;
                 match shared_state.symtab.to_str(id) {
-                    "zN" => pre_nzcv |= (value.bits as u32) << 3,
-                    "zZ" => pre_nzcv |= (value.bits as u32) << 2,
-                    "zC" => pre_nzcv |= (value.bits as u32) << 1,
-                    "zV" => pre_nzcv |= value.bits as u32,
+                    "zN" => pre_nzcv |= bits << 3,
+                    "zZ" => pre_nzcv |= bits << 2,
+                    "zC" => pre_nzcv |= bits << 1,
+                    "zV" => pre_nzcv |= bits,
                     _ => (),
                 }
             }
@@ -437,15 +438,16 @@ pub fn interrogate_model(
             if name.starts_with("zR") {
                 let reg_str = &name[2..];
                 if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
-                    post_gprs.push((reg_num, value.bits));
+                    post_gprs.push((reg_num, value.try_into()?));
                 }
             } else if name == "zPSTATE" {
                 if let &[Accessor::Field(id)] = accessor.as_slice() {
+                    let bits: u32 = value.try_into()? as u32;
                     match shared_state.symtab.to_str(id) {
-                        "zN" => or_pair(&mut post_nzcv, (8, (value.bits as u32) << 3)),
-                        "zZ" => or_pair(&mut post_nzcv, (4, (value.bits as u32) << 2)),
-                        "zC" => or_pair(&mut post_nzcv, (2, (value.bits as u32) << 1)),
-                        "zV" => or_pair(&mut post_nzcv, (1, value.bits as u32)),
+                        "zN" => or_pair(&mut post_nzcv, (8, bits << 3)),
+                        "zZ" => or_pair(&mut post_nzcv, (4, bits << 2)),
+                        "zC" => or_pair(&mut post_nzcv, (2, bits << 1)),
+                        "zV" => or_pair(&mut post_nzcv, (1, bits)),
                         _ => (),
                     }
                 }

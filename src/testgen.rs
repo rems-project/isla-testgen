@@ -36,7 +36,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::process::exit;
 
-use isla_lib::concrete::{bitvector64::B64, BV};
+// TODO: allow B64 or B129
+use isla_lib::concrete::{bitvector129::B129, BV};
 use isla_lib::ir::*;
 use isla_lib::memory::Memory;
 use isla_lib::simplify::write_events;
@@ -88,13 +89,13 @@ fn parse_instruction_masks(little_endian: bool, args: &Vec<String>) -> Vec<(&str
     v
 }
 
-fn instruction_opcode(
+fn instruction_opcode<B: BV>(
     hex: bool,
     little_endian: bool,
     encodings: &asl_tag_files::Encodings,
-    isa_config: &ISAConfig<B64>,
+    isa_config: &ISAConfig<B>,
     instruction: &str,
-) -> (B64, bool) {
+) -> (B, bool) {
     let (opcode, random) = if instruction == "_" {
         let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64);
         println!("Instruction {:#010x}: {}", opcode, description);
@@ -122,7 +123,7 @@ fn instruction_opcode(
             }
         }
     };
-    (B64::from_u32(if little_endian { u32::from_le_bytes(opcode) } else { u32::from_be_bytes(opcode) }), random)
+    (B::from_u32(if little_endian { u32::from_le_bytes(opcode) } else { u32::from_be_bytes(opcode) }), random)
 }
 
 fn isla_main() -> i32 {
@@ -139,7 +140,7 @@ fn isla_main() -> i32 {
     let (matches, arch) = opts::parse(&mut hasher, &opts);
 
     let CommonOpts { num_threads, mut arch, symtab, isa_config } =
-        opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
+        opts::parse_with_arch::<B129>(&mut hasher, &opts, &matches, &arch);
 
     let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");
 
@@ -204,7 +205,7 @@ fn isla_main() -> i32 {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
-            eprintln!("opcode: {:#010x}  mask: {}", opcode.bits, mask_str);
+            eprintln!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
                 setup_opcode(&shared_state, &frame, opcode, opcode_mask, checkpoint.clone());
             let mut continuations =
@@ -242,7 +243,7 @@ fn isla_main() -> i32 {
         use isla_lib::simplify::simplify;
         let trace = checkpoint.trace().as_ref().expect("No trace!");
         let mut events = simplify(trace);
-        let events: Vec<Event<B64>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
+        let events: Vec<Event<B129>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
         write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
     }
 
