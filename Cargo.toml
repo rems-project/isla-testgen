@@ -12,6 +12,7 @@ path = "src/testgen.rs"
 
 [dependencies]
 crossbeam = "0.7.3"
+getopts = "0.2.21"
 isla-lib = { path = "isla/isla-lib" }
 isla-axiomatic = { path = "isla/isla-axiomatic" }
 isla = { path = "isla" }

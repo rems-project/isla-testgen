@@ -28,6 +28,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use getopts;
 use isla_axiomatic::litmus::assemble_instruction;
 use isla_lib::config::ISAConfig;
 use isla_lib::init::{initialize_architecture, Initialized};
@@ -47,6 +48,8 @@ use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
 use isla_testgen::extract_state;
 use isla_testgen::generate_object;
+use isla_testgen::target;
+use isla_testgen::target::Target;
 
 use isla::opts;
 use opts::CommonOpts;
@@ -129,6 +132,7 @@ fn instruction_opcode<B: BV>(
 fn isla_main() -> i32 {
     let mut opts = opts::common_opts();
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
+    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optflag("x", "hex", "parse instruction as hexadecimal opcode, rather than assembly");
     opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
@@ -137,10 +141,21 @@ fn isla_main() -> i32 {
     opts.optflag("", "all-events", "dump events for every behaviour");
 
     let mut hasher = Sha256::new();
-    let (matches, arch) = opts::parse(&mut hasher, &opts);
+    let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
 
+    match matches.opt_str("target-arch").as_ref().map(String::as_str).unwrap_or("aarch64") {
+        "aarch64" => testgen_main(target::Aarch64 {}, hasher, opts, matches, arch),
+        "morello" => testgen_main(target::Morello {}, hasher, opts, matches, arch),
+        target_str => {
+            eprintln!("Unknown target architecture: {}", target_str);
+            1
+        }
+    }
+}
+
+fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts::Options, matches: getopts::Matches, arch: Vec<Def<String, B>>) -> i32 {
     let CommonOpts { num_threads, mut arch, symtab, isa_config } =
-        opts::parse_with_arch::<B129>(&mut hasher, &opts, &matches, &arch);
+        opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
     let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");
 
@@ -190,7 +205,7 @@ fn isla_main() -> i32 {
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
-    let (mut frame, mut checkpoint, init_regs) = setup_init_regs(&shared_state, frame, checkpoint);
+    let (mut frame, mut checkpoint, init_regs) = setup_init_regs(&shared_state, frame, checkpoint, T::regs());
 
     let mut opcode_vars = vec![];
 
@@ -243,7 +258,7 @@ fn isla_main() -> i32 {
         use isla_lib::simplify::simplify;
         let trace = checkpoint.trace().as_ref().expect("No trace!");
         let mut events = simplify(trace);
-        let events: Vec<Event<B129>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
+        let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
         write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
     }
 
