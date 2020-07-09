@@ -214,9 +214,9 @@ pub fn setup_init_regs<'ir, B: BV>(
         let ex_val =
             local_frame.regs_mut().get_mut(&ex_var).expect(&format!("No value for register {} during setup", reg));
         match ex_val {
-            UVal::Uninit(Ty::Bits(64)) => {
+            UVal::Uninit(Ty::Bits(n)) => {
                 let var = solver.fresh();
-                solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(64)));
+                solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(*n)));
                 *ex_val = UVal::Init(Val::Symbolic(var));
             }
             UVal::Init(Val::Symbolic(_var)) => (),
