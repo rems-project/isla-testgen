@@ -205,7 +205,7 @@ fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts:
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
-    let (mut frame, mut checkpoint, init_regs) = setup_init_regs(&shared_state, frame, checkpoint, T::regs());
+    let (mut frame, mut checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, T::regs());
 
     let mut opcode_vars = vec![];
 
@@ -261,12 +261,6 @@ fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts:
         let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
         write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
     }
-
-    println!("Initial state:");
-    interrogate_model(checkpoint.clone(), opcode_vars.iter().chain(init_regs.iter())).unwrap();
-
-    println!("Sample final state:");
-    interrogate_model(checkpoint.clone(), regs_for_state(&shared_state, frame).iter()).unwrap();
 
     println!("Initial state extracted from events:");
     let initial_state = extract_state::interrogate_model(

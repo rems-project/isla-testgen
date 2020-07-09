@@ -203,12 +203,11 @@ pub fn setup_init_regs<'ir, B: BV>(
     frame: Frame<'ir, B>,
     checkpoint: Checkpoint<B>,
     regs: Vec<String>,
-) -> (Frame<'ir, B>, Checkpoint<B>, Vec<(String, RegSource)>) {
+) -> (Frame<'ir, B>, Checkpoint<B>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
 
-    let mut inits = vec![];
     for reg in regs {
         let ex_var =
             shared_state.symtab.get(&zencode::encode(&reg)).expect(&format!("Register {} missing during setup", reg));
@@ -219,15 +218,9 @@ pub fn setup_init_regs<'ir, B: BV>(
                 let var = solver.fresh();
                 solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(64)));
                 *ex_val = UVal::Init(Val::Symbolic(var));
-                inits.push((reg, RegSource::Symbolic(var)));
             }
-            UVal::Init(Val::Symbolic(var)) => {
-                inits.push((reg, RegSource::Symbolic(*var)));
-            }
-            UVal::Init(Val::Bits(bits)) => {
-                let rsrc = RegSource::Concrete(bits.try_into().expect(&format!("Value {} for register {} too large", bits, reg)));
-                inits.push((reg, rsrc));
-            }
+            UVal::Init(Val::Symbolic(_var)) => (),
+            UVal::Init(Val::Bits(_bits)) => (),
             _ => panic!("Bad value for register {} in setup", reg),
         }
     }
@@ -245,7 +238,7 @@ pub fn setup_init_regs<'ir, B: BV>(
         smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
     ));
 
-    (freeze_frame(&local_frame), smt::checkpoint(&mut solver), inits)
+    (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }
 
 pub fn regs_for_state<'ir, B: BV>(shared_state: &SharedState<'ir, B>, frame: Frame<'ir, B>) -> Vec<(String, RegSource)> {
@@ -275,52 +268,6 @@ pub fn regs_for_state<'ir, B: BV>(shared_state: &SharedState<'ir, B>, frame: Fra
         }
     }
     reg_sources
-}
-
-// Report final model details
-pub fn interrogate_model<'i, B: BV, V>(checkpoint: Checkpoint<B>, vars: V) -> Result<(), String>
-where
-    V: Iterator<Item = &'i (String, RegSource)>,
-{
-    let cfg = smt::Config::new();
-    cfg.set_param_value("model", "true");
-    let ctx = smt::Context::new(cfg);
-    let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
-    match solver.check_sat() {
-        SmtResult::Sat => (),
-        SmtResult::Unsat => return Err(String::from("Unsatisfiable at recheck")),
-        SmtResult::Unknown => return Err(String::from("Solver returned unknown at recheck")),
-    };
-
-    let mut model = Model::new(&solver);
-    log!(log::VERBOSE, format!("Model: {:?}", model));
-
-    let mut unassigned = Vec::new();
-
-    for (name, val) in vars {
-        match val {
-            RegSource::Symbolic(var) => {
-                let model_val = model.get_var(*var).unwrap();
-                match model_val {
-                    Some(smtlib::Exp::Bits64(bits, _)) => println!("{}: {:#010x}", name, bits),
-                    Some(_) => println!("Bad model value"),
-                    None => unassigned.push(name),
-                }
-            }
-            RegSource::Concrete(v) => {
-                println!("{}: {:#010x}  (fixed)", name, v);
-            }
-            RegSource::Uninit => unassigned.push(name),
-        }
-    }
-    if unassigned.len() > 0 {
-        print!("Unassigned:");
-        for name in unassigned {
-            print!(" {}", name)
-        }
-        println!(".")
-    }
-    Ok(())
 }
 
 pub fn init_model<'ir, B: BV>(
