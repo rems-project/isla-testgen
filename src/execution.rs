@@ -29,10 +29,12 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crossbeam::queue::SegQueue;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
+
+use crate::target::Target;
 
 use isla_lib::concrete::BV;
 use isla_lib::error::ExecError;
@@ -198,11 +200,14 @@ pub enum RegSource {
     Uninit,
 }
 
-pub fn setup_init_regs<'ir, B: BV>(
+pub fn setup_init_regs<'ir, B: BV, T: Target>(
     shared_state: &SharedState<'ir, B>,
     frame: Frame<'ir, B>,
     checkpoint: Checkpoint<B>,
     regs: Vec<String>,
+    register_types: &HashMap<Name, Ty<Name>>,
+    init_pc: u64,
+    _target: T,
 ) -> (Frame<'ir, B>, Checkpoint<B>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
@@ -220,10 +225,22 @@ pub fn setup_init_regs<'ir, B: BV>(
                 *ex_val = UVal::Init(Val::Symbolic(var));
             }
             UVal::Init(Val::Symbolic(_var)) => (),
-            UVal::Init(Val::Bits(_bits)) => (),
+            UVal::Init(Val::Bits(bits)) => {
+                let var = solver.fresh();
+                solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(bits.len())));
+                *ex_val = UVal::Init(Val::Symbolic(var));
+            }
             _ => panic!("Bad value for register {} in setup", reg),
         }
     }
+
+    let pc_id = shared_state.symtab.lookup("z_PC");
+    let pc = local_frame.regs_mut().get_mut(&pc_id).unwrap();
+    let pc_type = register_types.get(&pc_id).unwrap();
+    match pc_type {
+        Ty::Bits(n) => *pc = UVal::Init(Val::Bits(B::new(init_pc, *n))),
+        _ => panic!("Bad type for PC: {:?}", pc_type),
+    };
 
     let memory = solver.fresh();
     let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
@@ -237,6 +254,8 @@ pub fn setup_init_regs<'ir, B: BV>(
         memory,
         smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
     ));
+
+    T::init(shared_state, &mut local_frame, &mut solver, init_pc);
 
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }
@@ -360,6 +379,7 @@ pub fn setup_opcode<B: BV>(
 }
 
 pub fn run_model_instruction<'ir, B: BV>(
+    model_function: &str,
     num_threads: usize,
     shared_state: &SharedState<'ir, B>,
     frame: &Frame<'ir, B>,
@@ -367,7 +387,7 @@ pub fn run_model_instruction<'ir, B: BV>(
     opcode_var: Sym,
     dump_events: bool,
 ) -> Vec<(Frame<'ir, B>, Checkpoint<B>)> {
-    let function_id = shared_state.symtab.lookup("zStep_CPU");
+    let function_id = shared_state.symtab.lookup(&zencode::encode(model_function));
     let (args, _, instrs) = shared_state.functions.get(&function_id).unwrap();
 
     let local_frame = executor::unfreeze_frame(frame);

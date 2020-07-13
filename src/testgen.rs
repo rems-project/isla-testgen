@@ -153,7 +153,7 @@ fn isla_main() -> i32 {
     }
 }
 
-fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts::Options, matches: getopts::Matches, arch: Vec<Def<String, B>>) -> i32 {
+fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::Options, matches: getopts::Matches, arch: Vec<Def<String, B>>) -> i32 {
     let CommonOpts { num_threads, mut arch, symtab, isa_config } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
@@ -177,7 +177,10 @@ fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts:
     let Initialized { regs, mut lets, shared_state } =
         initialize_architecture(&mut arch, symtab, &isa_config, AssertionMode::Optimistic);
 
-    lets.insert(ELF_ENTRY, UVal::Init(Val::I128(isa_config.thread_base as i128)));
+    let init_pc = isa_config.thread_base;
+    // NB: The current aarch64 model needs this, however we explicitly
+    // override the PC when setting up the registers.
+    lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
 
     let little_endian = match matches.opt_str("endianness").as_ref().map(String::as_str) {
         Some("little") | None => true,
@@ -205,7 +208,9 @@ fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts:
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
-    let (mut frame, mut checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, T::regs());
+    let (mut frame, mut checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, T::regs(), &register_types, init_pc, target);
+
+    let run_instruction_function = T::run_instruction_function();
 
     let mut opcode_vars = vec![];
 
@@ -224,7 +229,7 @@ fn testgen_main<T: Target, B: BV>(_target: T, mut hasher: Sha256, opts: getopts:
             let (opcode_var, op_checkpoint) =
                 setup_opcode(&shared_state, &frame, opcode, opcode_mask, checkpoint.clone());
             let mut continuations =
-                run_model_instruction(num_threads, &shared_state, &frame, op_checkpoint, opcode_var, dump_all_events);
+                run_model_instruction(&run_instruction_function, num_threads, &shared_state, &frame, op_checkpoint, opcode_var, dump_all_events);
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
