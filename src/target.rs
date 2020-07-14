@@ -44,5 +44,5 @@ impl Target for Morello {
             _ => panic!("Unexpected value for PCC: {:?}", pcc),
         }
     }
-    fn run_instruction_function() -> String { "__TopLevel".to_string() }
+    fn run_instruction_function() -> String { "step_model".to_string() }
 }
