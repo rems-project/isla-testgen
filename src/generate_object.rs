@@ -30,6 +30,7 @@
 
 use crate::extract_state;
 
+use isla_lib::concrete::BV;
 use isla_lib::config::ISAConfig;
 
 use std::convert::TryFrom;
@@ -65,9 +66,9 @@ fn write_bytes(asm_file: &mut File, bytes: &Vec<u8>) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-pub fn make_asm_files(
+pub fn make_asm_files<B: BV>(
     base_name: String,
-    pre_post_states: extract_state::PrePostStates,
+    pre_post_states: extract_state::PrePostStates<B>,
     entry_reg: u32,
     exit_reg: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {

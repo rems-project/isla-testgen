@@ -207,11 +207,12 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     regs: Vec<String>,
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
-    _target: T,
+    _target: &T,
 ) -> (Frame<'ir, B>, Checkpoint<B>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
+    let mut reg_vars = HashMap::new();
 
     for reg in regs {
         let ex_var =
@@ -223,12 +224,16 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
                 let var = solver.fresh();
                 solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(*n)));
                 *ex_val = UVal::Init(Val::Symbolic(var));
+                reg_vars.insert(reg, var);
             }
-            UVal::Init(Val::Symbolic(_var)) => (),
+            UVal::Init(Val::Symbolic(var)) => {
+                reg_vars.insert(reg, *var);
+            }
             UVal::Init(Val::Bits(bits)) => {
                 let var = solver.fresh();
                 solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(bits.len())));
                 *ex_val = UVal::Init(Val::Symbolic(var));
+                reg_vars.insert(reg, var);
             }
             _ => panic!("Bad value for register {} in setup", reg),
         }
@@ -255,7 +260,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
         smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
     ));
 
-    T::init(shared_state, &mut local_frame, &mut solver, init_pc);
+    T::init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
 
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }

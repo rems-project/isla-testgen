@@ -208,7 +208,7 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
-    let (mut frame, mut checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, T::regs(), &register_types, init_pc, target);
+    let (mut frame, mut checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, T::regs(), &register_types, init_pc, &target);
 
     let run_instruction_function = T::run_instruction_function();
 
@@ -269,6 +269,7 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
 
     println!("Initial state extracted from events:");
     let initial_state = extract_state::interrogate_model(
+        &target,
         checkpoint.clone(),
         &shared_state,
         &register_types,

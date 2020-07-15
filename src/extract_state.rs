@@ -32,6 +32,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
 use std::ops::Range;
 
+use crate::target::Target;
+
 use isla_lib::concrete::BV;
 use isla_lib::error::ExecError;
 use isla_lib::ir;
@@ -42,23 +44,37 @@ use isla_lib::primop::smt_value;
 use isla_lib::smt;
 use isla_lib::smt::smtlib::Exp;
 use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver, Sym};
+use isla_lib::zencode;
+
+
+// TODO: get smt.rs to return a BV
+fn bits_to_bv<B: BV>(bits: &Vec<bool>) -> B {
+    let mut bv = B::zeros(bits.len() as u32);
+    for n in 0..bits.len() {
+        if bits[n] {
+            bv = bv.set_slice(n as u32, B::BIT_ONE);
+        };
+    };
+    bv
+}
 
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<B>, ExecError> {
     let exp = smt_value(val)?;
     match model.get_exp(&exp)? {
         Some(Exp::Bits64(bits, len)) => Ok(Some(B::new(bits, len))),
+        Some(Exp::Bits(bits)) => Ok(Some(bits_to_bv(&bits))),
         None => Ok(None),
         Some(exp) => Err(ExecError::Z3Error(format!("Bad model value {:?}", exp))),
     }
 }
 
-pub struct PrePostStates {
+pub struct PrePostStates<B> {
     pub code: Vec<(Range<memory::Address>, Vec<u8>)>,
     pub pre_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
-    pub pre_gprs: Vec<(u32, u64)>,
+    pub pre_gprs: Vec<(u32, B)>,
     pub pre_nzcv: u32,
     pub post_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
-    pub post_gprs: Vec<(u32, u64)>,
+    pub post_gprs: Vec<(u32, B)>,
     pub post_nzcv_mask: u32,
     pub post_nzcv_value: u32,
 }
@@ -131,7 +147,7 @@ fn or_pair(x: &mut (u32, u32), (y0, y1): (u32, u32)) {
     x.1 |= y1;
 }
 
-fn iter_b64_types<F, G, T, B:BV>(
+fn iter_bv_types<F, G, T, B: BV>(
     shared_state: &ir::SharedState<B>,
     f: &mut F,
     g: &mut G,
@@ -144,13 +160,13 @@ fn iter_b64_types<F, G, T, B:BV>(
     G: FnMut(&Ty<Name>, &Vec<Accessor>, &Val<B>, &mut T),
 {
     match ty {
-        Ty::Bits(sz) if *sz <= 64 => f(*sz, accessors, v, r),
+        Ty::Bits(sz) => f(*sz, accessors, v, r),
         Ty::Struct(name) => match v {
             Val::Struct(field_vals) => {
                 let fields = shared_state.structs.get(name).unwrap();
                 for (field, ty) in fields {
                     accessors.push(Accessor::Field(*field));
-                    iter_b64_types(shared_state, f, g, ty, accessors, field_vals.get(field).unwrap(), r);
+                    iter_bv_types(shared_state, f, g, ty, accessors, field_vals.get(field).unwrap(), r);
                     accessors.pop();
                 }
             }
@@ -160,13 +176,16 @@ fn iter_b64_types<F, G, T, B:BV>(
     }
 }
 
-pub fn interrogate_model<B: BV>(
+/// Extract pre- and post-states from the event trace and the model.  Writes
+/// that happen during initialisation are not included in the pre-state.
+pub fn interrogate_model<B: BV, T: Target>(
+    _target: &T,
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<B>,
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
-) -> Result<PrePostStates, ExecError> {
+) -> Result<PrePostStates<B>, ExecError> {
     let cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
@@ -211,6 +230,16 @@ pub fn interrogate_model<B: BV>(
         match &event {
             Event::ReadMem { value, read_kind, address, bytes } if init_complete || is_ifetch(read_kind) => {
                 init_complete = true;
+                // We explicitly reset these registers to symbolic variables after
+                // symbolic execution of the model initialisation, so throw away
+                // any current value, especially as we want to find out if we need
+                // to set them in the actual test and so should not ignore the next
+                // write.
+                for reg in T::regs() {
+                    let reg_name = shared_state.symtab.get(&zencode::encode(&reg))
+                        .expect(&format!("Register {} missing during extract_state", reg));
+                    current_registers.remove(&(reg_name, Vec::new()));
+                }
                 let address = get_model_val(&mut model, address)?.expect("Arbitrary address");
                 let val = get_model_val(&mut model, value)?;
                 match val {
@@ -250,10 +279,10 @@ pub fn interrogate_model<B: BV>(
                 }
             }
             Event::ReadReg(reg, accessors, value) => {
-                let mut process_read_bits64 = |_sz: u32,
-                                               accessors: &Vec<Accessor>,
-                                               value: &Val<B>,
-                                               skipped: &mut HashSet<_>| {
+                let mut process_read_bits = |_sz: u32,
+                                             accessors: &Vec<Accessor>,
+                                             value: &Val<B>,
+                                             skipped: &mut HashSet<_>| {
                     let key = (*reg, accessors.clone());
                     if skipped.contains(&key) {
                         return ();
@@ -299,9 +328,9 @@ pub fn interrogate_model<B: BV>(
                 match register_types.get(reg) {
                     Some(ty) => {
                         let (read_ty, read_value) = apply_accessors(shared_state, ty, accessors, &value);
-                        iter_b64_types(
+                        iter_bv_types(
                             shared_state,
-                            &mut process_read_bits64,
+                            &mut process_read_bits,
                             &mut process_read_unsupported,
                             &read_ty,
                             &mut accessors.clone(),
@@ -333,7 +362,7 @@ pub fn interrogate_model<B: BV>(
                 match register_types.get(reg) {
                     Some(ty) => {
                         let (assigned_ty, assigned_value) = apply_accessors(shared_state, ty, accessors, &value);
-                        iter_b64_types(
+                        iter_bv_types(
                             shared_state,
                             &mut process_write,
                             &mut process_unsupported,
@@ -411,11 +440,8 @@ pub fn interrogate_model<B: BV>(
     let mut pre_nzcv = 0u32;
     for ((reg, accessor), value) in &initial_registers {
         let name = shared_state.symtab.to_str(*reg);
-        if name.starts_with("zR") {
-            let reg_str = &name[2..];
-            if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
-                pre_gprs.push((reg_num, value.try_into()?));
-            }
+        if let Some(reg_num) = T::is_gpr(name) {
+                pre_gprs.push((reg_num, *value));
         } else if name == "zPSTATE" {
             if let &[Accessor::Field(id)] = accessor.as_slice() {
                 let bits: u32 = value.try_into()? as u32;
@@ -438,7 +464,7 @@ pub fn interrogate_model<B: BV>(
             if name.starts_with("zR") {
                 let reg_str = &name[2..];
                 if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
-                    post_gprs.push((reg_num, value.try_into()?));
+                    post_gprs.push((reg_num, *value));
                 }
             } else if name == "zPSTATE" {
                 if let &[Accessor::Field(id)] = accessor.as_slice() {
