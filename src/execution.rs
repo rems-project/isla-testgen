@@ -305,7 +305,7 @@ pub fn init_model<'ir, B: BV>(
     let init_fn = shared_state.symtab.lookup("zinit");
     let (init_args, _, init_instrs) = shared_state.functions.get(&init_fn).unwrap();
     let init_result = SegQueue::new();
-    let init_task = LocalFrame::new(init_args, None, init_instrs)
+    let init_task = LocalFrame::new(init_fn, init_args, None, init_instrs)
         .add_lets(&lets)
         .add_regs(&regs)
         .set_memory(memory.clone())
@@ -397,7 +397,7 @@ pub fn run_model_instruction<'ir, B: BV>(
 
     let local_frame = executor::unfreeze_frame(frame);
 
-    let task = local_frame.new_call(args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
+    let task = local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
 
     let queue = Arc::new(SegQueue::new());
 
@@ -430,12 +430,15 @@ pub fn run_model_instruction<'ir, B: BV>(
                         }
                     }
                 }
-                Err(ExecError::Dead) => {
+                Err((ExecError::Dead, _)) => {
                     log_from!(tid, log::VERBOSE, "dead");
                     collected.push((Err(String::from("dead")), events))
                 }
-                Err(err) => {
+                Err((err, backtrace)) => {
                     log_from!(tid, log::VERBOSE, format!("Error {:?}", err));
+                    for (f, pc) in backtrace.iter().rev() {
+                        log_from!(tid, log::VERBOSE, format!("  {} @ {}", shared_state.symtab.to_str(*f), pc));
+                    }
                     collected.push((Err(format!("Error {:?}", err)), events))
                 }
             }
