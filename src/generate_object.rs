@@ -115,7 +115,7 @@ pub fn make_asm_files<B: BV>(
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
     for (reg, value) in pre_post_states.pre_gprs {
-        writeln!(asm_file, "\tldr x{}, ={:#010x}", reg, value)?;
+        writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
     }
     writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, pre_post_states.pre_nzcv << 28)?;
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
@@ -137,7 +137,7 @@ pub fn make_asm_files<B: BV>(
     }
     writeln!(asm_file, "\t/* Check registers */")?;
     for (reg, value) in pre_post_states.post_gprs {
-        writeln!(asm_file, "\tldr x{}, ={:#010x}", entry_reg, value)?;
+        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
         writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, reg)?;
         writeln!(asm_file, "\tb.ne comparison_fail")?;
     }
