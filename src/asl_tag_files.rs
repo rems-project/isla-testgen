@@ -147,6 +147,32 @@ impl Field {
         }
         (bits, string_bits)
     }
+    fn matches(&self, mut val: u32) -> bool {
+        val >>= self.low;
+        let mut chars = self.pattern.chars().rev();
+        loop {
+            match chars.next() {
+                None => return true,
+                Some('(') => continue,
+                Some(')') => continue,
+                Some('!') => {
+                    // Should maybe check this...
+                    chars.next();
+                    val >>= 1;
+                }
+                Some('0') => {
+                    if val % 2 != 0 { return false; };
+                    val >>= 1;
+                }
+                Some('1') => {
+                    if val % 2 != 1 { return false; }
+                    val >>= 1;
+                }
+                Some('x') => val >>= 1,
+                _ => panic!("Bad pattern {}", self.pattern),
+            }
+        }
+    }
 }
 
 struct Diagram {
@@ -175,6 +201,10 @@ impl Diagram {
             description.push_str(&new_string);
         }
         (bits, description)
+    }
+
+    fn matches(&self, val: u32) -> bool {
+        self.patterns.iter().all(|f| f.matches(val))
     }
 }
 
@@ -216,6 +246,11 @@ impl Encodings {
         let mut rng = rand::thread_rng();
         let i = rng.gen_range(0, diagrams.len());
         diagrams[i].random()
+    }
+
+    pub fn search(&self, encoding: Encoding, opcode: u32) -> Vec<&str> {
+        let diagrams = self.get(encoding);
+        diagrams.iter().filter_map(|d| if d.matches(opcode) { Some(d.name.as_str()) } else { None }).collect()
     }
 }
 

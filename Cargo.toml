@@ -10,6 +10,10 @@ readme = "../README.md"
 name = "isla-testgen"
 path = "src/testgen.rs"
 
+[[bin]]
+name = "decode-from-tags"
+path = "src/decode_from_tags.rs"
+
 [dependencies]
 crossbeam = "0.7.3"
 getopts = "0.2.21"
