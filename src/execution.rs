@@ -397,7 +397,10 @@ pub fn run_model_instruction<'ir, B: BV>(
 
     let local_frame = executor::unfreeze_frame(frame);
 
-    let task = local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
+    let mut task = local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
+    let mut stop_set = HashSet::new();
+    stop_set.insert(shared_state.symtab.lookup(&zencode::encode("AArch64_Abort")));
+    task.set_stop_functions(&stop_set);
 
     let queue = Arc::new(SegQueue::new());
 
