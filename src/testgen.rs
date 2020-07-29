@@ -34,7 +34,7 @@ use isla_lib::config::ISAConfig;
 use isla_lib::init::{initialize_architecture, Initialized};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::exit;
 
 // TODO: allow B64 or B129
@@ -43,6 +43,7 @@ use isla_lib::ir::*;
 use isla_lib::memory::Memory;
 use isla_lib::simplify::write_events;
 use isla_lib::smt::Event;
+use isla_lib::zencode;
 
 use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
@@ -137,6 +138,7 @@ fn isla_main() -> i32 {
     opts.optflag("x", "hex", "parse instruction as hexadecimal opcode, rather than assembly");
     opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
+    opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
     opts.optflag("", "events", "dump final events");
     opts.optflag("", "all-events", "dump events for every behaviour");
 
@@ -151,6 +153,18 @@ fn isla_main() -> i32 {
             1
         }
     }
+}
+
+fn parse_function_names<B>(names: Vec<String>, shared_state: &SharedState<B>) -> HashSet<Name> {
+    let mut set = HashSet::new();
+    for f in names {
+        let fz = zencode::encode(&f);
+        let n = shared_state.symtab.get(&fz)
+            .or_else(|| shared_state.symtab.get(&f))
+            .unwrap_or_else(|| panic!("Function {} not found", f));
+        set.insert(n);
+    }
+    set
 }
 
 fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::Options, matches: getopts::Matches, arch: Vec<Def<String, B>>) -> i32 {
@@ -181,6 +195,8 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
     // NB: The current aarch64 model needs this, however we explicitly
     // override the PC when setting up the registers.
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
+
+    let stop_functions = parse_function_names(matches.opt_strs("stop-fn"), &shared_state);
 
     let little_endian = match matches.opt_str("endianness").as_ref().map(String::as_str) {
         Some("little") | None => true,
@@ -229,7 +245,7 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
             let (opcode_var, op_checkpoint) =
                 setup_opcode(&shared_state, &frame, opcode, opcode_mask, checkpoint.clone());
             let mut continuations =
-                run_model_instruction(&run_instruction_function, num_threads, &shared_state, &frame, op_checkpoint, opcode_var, dump_all_events);
+                run_model_instruction(&run_instruction_function, num_threads, &shared_state, &frame, op_checkpoint, opcode_var, &stop_functions, dump_all_events);
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
