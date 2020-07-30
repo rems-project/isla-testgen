@@ -28,7 +28,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use getopts;
 use isla_axiomatic::litmus::assemble_instruction;
 use isla_lib::config::ISAConfig;
 use isla_lib::init::{initialize_architecture, Initialized};
@@ -61,7 +60,7 @@ fn main() {
     exit(code)
 }
 
-fn parse_instruction_masks(little_endian: bool, args: &Vec<String>) -> Vec<(&str, Option<u32>)> {
+fn parse_instruction_masks(little_endian: bool, args: &[String]) -> Vec<(&str, Option<u32>)> {
     let mut iter = args.iter().peekable();
     let mut v: Vec<(&str, Option<u32>)> = vec![];
     loop {
@@ -69,8 +68,7 @@ fn parse_instruction_masks(little_endian: bool, args: &Vec<String>) -> Vec<(&str
             None => break,
             Some(s) => s,
         };
-        let p = iter.peek();
-        let p = p.map(|r| *r);
+        let p = iter.peek().copied();
         let m: Option<u32> = match p {
             None => None,
             Some(s) => {
@@ -145,7 +143,7 @@ fn isla_main() -> i32 {
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
 
-    match matches.opt_str("target-arch").as_ref().map(String::as_str).unwrap_or("aarch64") {
+    match matches.opt_str("target-arch").as_deref().unwrap_or("aarch64") {
         "aarch64" => testgen_main(target::Aarch64 {}, hasher, opts, matches, arch),
         "morello" => testgen_main(target::Morello {}, hasher, opts, matches, arch),
         target_str => {
@@ -159,7 +157,9 @@ fn parse_function_names<B>(names: Vec<String>, shared_state: &SharedState<B>) ->
     let mut set = HashSet::new();
     for f in names {
         let fz = zencode::encode(&f);
-        let n = shared_state.symtab.get(&fz)
+        let n = shared_state
+            .symtab
+            .get(&fz)
             .or_else(|| shared_state.symtab.get(&f))
             .unwrap_or_else(|| panic!("Function {} not found", f));
         set.insert(n);
@@ -167,7 +167,13 @@ fn parse_function_names<B>(names: Vec<String>, shared_state: &SharedState<B>) ->
     set
 }
 
-fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::Options, matches: getopts::Matches, arch: Vec<Def<String, B>>) -> i32 {
+fn testgen_main<T: Target, B: BV>(
+    target: T,
+    mut hasher: Sha256,
+    opts: getopts::Options,
+    matches: getopts::Matches,
+    arch: Vec<Def<String, B>>,
+) -> i32 {
     let CommonOpts { num_threads, mut arch, symtab, isa_config } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
@@ -198,7 +204,7 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
 
     let stop_functions = parse_function_names(matches.opt_strs("stop-fn"), &shared_state);
 
-    let little_endian = match matches.opt_str("endianness").as_ref().map(String::as_str) {
+    let little_endian = match matches.opt_str("endianness").as_deref() {
         Some("little") | None => true,
         Some("big") => false,
         Some(_) => {
@@ -224,7 +230,8 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
-    let (mut frame, mut checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, T::regs(), &register_types, init_pc, &target);
+    let (mut frame, mut checkpoint) =
+        setup_init_regs(&shared_state, frame, checkpoint, T::regs(), &register_types, init_pc, &target);
 
     let run_instruction_function = T::run_instruction_function();
 
@@ -244,8 +251,16 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
             eprintln!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
                 setup_opcode(&shared_state, &frame, opcode, opcode_mask, checkpoint.clone());
-            let mut continuations =
-                run_model_instruction(&run_instruction_function, num_threads, &shared_state, &frame, op_checkpoint, opcode_var, &stop_functions, dump_all_events);
+            let mut continuations = run_model_instruction(
+                &run_instruction_function,
+                num_threads,
+                &shared_state,
+                &frame,
+                op_checkpoint,
+                opcode_var,
+                &stop_functions,
+                dump_all_events,
+            );
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
@@ -279,14 +294,14 @@ fn testgen_main<T: Target, B: BV>(target: T, mut hasher: Sha256, opts: getopts::
         use isla_lib::simplify::simplify;
         let trace = checkpoint.trace().as_ref().expect("No trace!");
         let mut events = simplify(trace);
-        let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
+        let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
         write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
     }
 
     println!("Initial state extracted from events:");
     let initial_state = extract_state::interrogate_model(
         &target,
-        checkpoint.clone(),
+        checkpoint,
         &shared_state,
         &register_types,
         &symbolic_regions,

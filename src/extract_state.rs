@@ -46,15 +46,14 @@ use isla_lib::smt::smtlib::Exp;
 use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver, Sym};
 use isla_lib::zencode;
 
-
 // TODO: get smt.rs to return a BV
-fn bits_to_bv<B: BV>(bits: &Vec<bool>) -> B {
+fn bits_to_bv<B: BV>(bits: &[bool]) -> B {
     let mut bv = B::zeros(bits.len() as u32);
     for n in 0..bits.len() {
         if bits[n] {
             bv = bv.set_slice(n as u32, B::BIT_ONE);
         };
-    };
+    }
     bv
 }
 
@@ -206,7 +205,7 @@ pub fn interrogate_model<B: BV, T: Target>(
     log!(log::VERBOSE, format!("Model: {:?}", model));
 
     let mut events = isla_lib::simplify::simplify(solver.trace());
-    let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).rev().collect();
+    let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
 
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
@@ -236,8 +235,10 @@ pub fn interrogate_model<B: BV, T: Target>(
                 // to set them in the actual test and so should not ignore the next
                 // write.
                 for reg in T::regs() {
-                    let reg_name = shared_state.symtab.get(&zencode::encode(&reg))
-                        .expect(&format!("Register {} missing during extract_state", reg));
+                    let reg_name = shared_state
+                        .symtab
+                        .get(&zencode::encode(&reg))
+                        .unwrap_or_else(|| panic!("Register {} missing during extract_state", reg));
                     current_registers.remove(&(reg_name, Vec::new()));
                 }
                 let address = get_model_val(&mut model, address)?.expect("Arbitrary address");
@@ -285,11 +286,11 @@ pub fn interrogate_model<B: BV, T: Target>(
                                              skipped: &mut HashSet<_>| {
                     let key = (*reg, accessors.clone());
                     if skipped.contains(&key) {
-                        return ();
+                        return;
                     };
                     if init_complete {
                         let val = get_model_val(&mut model, value).expect("get_model_val");
-                        if let None = current_registers.insert(key.clone(), (true, val)) {
+                        if current_registers.insert(key.clone(), (true, val)).is_none() {
                             match val {
                                 Some(val) => {
                                     initial_registers.insert(key, val);
@@ -315,7 +316,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                     |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
                         if skipped.contains(&key) || !init_complete {
-                            return ();
+                            return;
                         };
                         eprintln!(
                             "Skipping read of {} with value {:?} due to unsupported type {:?}",
@@ -389,12 +390,12 @@ pub fn interrogate_model<B: BV, T: Target>(
     for (address, value) in &initial_memory {
         print!("{:08x}:{:02x} ", address, value);
     }
-    println!("");
+    println!();
     print!("Initial registers: ");
     for (regacc, value) in &initial_registers {
         print!("{}:{} ", regacc_to_str(shared_state, regacc), value);
     }
-    println!("");
+    println!();
 
     println!("Final memory:");
     for (address, value) in &current_memory {
@@ -403,7 +404,7 @@ pub fn interrogate_model<B: BV, T: Target>(
             None => print!("{:08x}:?? ", address),
         }
     }
-    println!("");
+    println!();
     print!("Final registers: ");
     for (regacc, (post_init, value)) in &current_registers {
         if *post_init {
@@ -413,7 +414,7 @@ pub fn interrogate_model<B: BV, T: Target>(
             }
         }
     }
-    println!("");
+    println!();
 
     let mut initial_symbolic_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
         symbolic_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
@@ -441,9 +442,9 @@ pub fn interrogate_model<B: BV, T: Target>(
     for ((reg, accessor), value) in &initial_registers {
         let name = shared_state.symtab.to_str(*reg);
         if let Some(reg_num) = T::is_gpr(name) {
-                pre_gprs.push((reg_num, *value));
+            pre_gprs.push((reg_num, *value));
         } else if name == "zPSTATE" {
-            if let &[Accessor::Field(id)] = accessor.as_slice() {
+            if let [Accessor::Field(id)] = *accessor.as_slice() {
                 let bits: u32 = value.try_into()? as u32;
                 match shared_state.symtab.to_str(id) {
                     "zN" => pre_nzcv |= bits << 3,
@@ -467,7 +468,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                     post_gprs.push((reg_num, *value));
                 }
             } else if name == "zPSTATE" {
-                if let &[Accessor::Field(id)] = accessor.as_slice() {
+                if let [Accessor::Field(id)] = *accessor.as_slice() {
                     let bits: u32 = value.try_into()? as u32;
                     match shared_state.symtab.to_str(id) {
                         "zN" => or_pair(&mut post_nzcv, (8, bits << 3)),

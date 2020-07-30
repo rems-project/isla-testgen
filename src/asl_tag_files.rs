@@ -94,7 +94,7 @@ impl FromStr for Field {
             return Err(format!("Bad field specifier line: {}", s));
         }
         let range: Vec<&str> = components[0].splitn(2, ':').collect();
-        if range.len() < 1 || range.len() > 2 {
+        if range.is_empty() || range.len() > 2 {
             return Err(format!("Bad range: {}", components[0]));
         }
         let high = range[0].parse().map_err(|_| "Bad range")?;
@@ -102,12 +102,10 @@ impl FromStr for Field {
         let name = components[1].to_string();
         let pattern = if components.len() == 3 {
             components[2].to_string()
+        } else if PATTERN.is_match(components[1]) {
+            components[1].to_string()
         } else {
-            if PATTERN.is_match(components[1]) {
-                components[1].to_string()
-            } else {
-                "x".repeat((high - low + 1) as usize)
-            }
+            "x".repeat((high - low + 1) as usize)
         };
         Ok(Field { high, low, name, pattern })
     }
@@ -128,13 +126,13 @@ impl Field {
                         break;
                     }
                     Some('1') => {
-                        bits = bits | (1 << i);
+                        bits |= 1 << i;
                         string_bits.push('1');
                         break;
                     }
                     Some('x') => {
                         if rand::random() {
-                            bits = bits | (1 << i);
+                            bits |= 1 << i;
                             string_bits.push('1');
                         } else {
                             string_bits.push('0');
@@ -161,11 +159,15 @@ impl Field {
                     val >>= 1;
                 }
                 Some('0') => {
-                    if val % 2 != 0 { return false; };
+                    if val % 2 != 0 {
+                        return false;
+                    };
                     val >>= 1;
                 }
                 Some('1') => {
-                    if val % 2 != 1 { return false; }
+                    if val % 2 != 1 {
+                        return false;
+                    }
                     val >>= 1;
                 }
                 Some('x') => val >>= 1,
@@ -240,7 +242,7 @@ impl Encodings {
     pub fn random(&self, encoding: Encoding) -> (u32, String) {
         use rand::Rng;
         let diagrams = self.get(encoding);
-        if diagrams.len() == 0 {
+        if diagrams.is_empty() {
             panic!("No diagrams for encoding {}", encoding);
         }
         let mut rng = rand::thread_rng();
@@ -284,11 +286,11 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
     let name = name.to_string();
     let diagram = Diagram { name, patterns };
     encodings.get_mut(encoding).push(diagram);
-    return Ok(());
+    Ok(())
 }
 
-pub fn read_tag_file(file_name: &String, exclusions: &Vec<String>) -> Encodings {
-    let file = File::open(file_name).expect(&format!("Unable to open tag file {}", file_name));
+pub fn read_tag_file(file_name: &str, exclusions: &[String]) -> Encodings {
+    let file = File::open(file_name).unwrap_or_else(|err| panic!("Unable to open tag file {}: {}", file_name, err));
     let reader = BufReader::new(file);
     let mut lines = reader.lines().map(|l| l.unwrap());
     let mut encodings = Encodings::default();

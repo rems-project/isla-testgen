@@ -51,7 +51,7 @@ impl fmt::Display for HarnessError {
 }
 impl Error for HarnessError {}
 
-fn write_bytes(asm_file: &mut File, bytes: &Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+fn write_bytes(asm_file: &mut File, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     for line in bytes.chunks(16) {
         write!(asm_file, "\t.byte")?;
         let mut byte_iter = line.iter();
@@ -61,7 +61,7 @@ fn write_bytes(asm_file: &mut File, bytes: &Vec<u8>) -> Result<(), Box<dyn std::
                 write!(asm_file, ", {:#04x}", byte)?;
             }
         }
-        writeln!(asm_file, "")?;
+        writeln!(asm_file)?;
     }
     Ok(())
 }
@@ -73,7 +73,7 @@ pub fn make_asm_files<B: BV>(
     exit_reg: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut asm_file = File::create(Path::new(&(base_name.clone() + ".s"))).expect("Unable to create .s file");
-    let mut ld_file = File::create(Path::new(&(base_name.clone() + ".ld"))).expect("Unable to create .ld file");
+    let mut ld_file = File::create(Path::new(&(base_name + ".ld"))).expect("Unable to create .ld file");
 
     writeln!(ld_file, "SECTIONS {{")?;
 
@@ -191,14 +191,7 @@ pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: String) {
     let linker_result = isa
         .linker
         .command()
-        .args(&[
-            "-o",
-            &(base_name.clone() + ".elf"),
-            "-T",
-            &(base_name.clone() + ".ld"),
-            "-n",
-            &(base_name.clone() + ".o"),
-        ])
+        .args(&["-o", &(base_name.clone() + ".elf"), "-T", &(base_name.clone() + ".ld"), "-n", &(base_name + ".o")])
         .status()
         .expect("Failed to run linker");
 

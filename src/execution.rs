@@ -85,8 +85,8 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
 
-        let read_exp = smt_value(value).expect(&format!("Bad memory read value {:?}", value));
-        let addr_exp = smt_value(address).expect(&format!("Bad read address value {:?}", address));
+        let read_exp = smt_value(value).unwrap_or_else(|err| panic!("Bad memory read value {:?}: {}", value, err));
+        let addr_exp = smt_value(address).unwrap_or_else(|err| panic!("Bad read address value {:?}: {}", address, err));
         solver.add(Def::Assert(Exp::Eq(
             Box::new(read_exp),
             Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
@@ -118,8 +118,8 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
 
-        let data_exp = smt_value(data).expect(&format!("Bad memory read value {:?}", data));
-        let addr_exp = smt_value(address).expect(&format!("Bad read address value {:?}", address));
+        let data_exp = smt_value(data).unwrap_or_else(|err| panic!("Bad memory read value {:?}: {}", data, err));
+        let addr_exp = smt_value(address).unwrap_or_else(|err| panic!("Bad read address value {:?}: {}", address, err));
         // TODO: endianness?
         let mut mem_exp = Exp::Store(
             Box::new(Exp::Var(self.memory_var)),
@@ -215,10 +215,14 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     let mut reg_vars = HashMap::new();
 
     for reg in regs {
-        let ex_var =
-            shared_state.symtab.get(&zencode::encode(&reg)).expect(&format!("Register {} missing during setup", reg));
-        let ex_val =
-            local_frame.regs_mut().get_mut(&ex_var).expect(&format!("No value for register {} during setup", reg));
+        let ex_var = shared_state
+            .symtab
+            .get(&zencode::encode(&reg))
+            .unwrap_or_else(|| panic!("Register {} missing during setup", reg));
+        let ex_val = local_frame
+            .regs_mut()
+            .get_mut(&ex_var)
+            .unwrap_or_else(|| panic!("No value for register {} during setup", reg));
         match ex_val {
             UVal::Uninit(Ty::Bits(n)) => {
                 let var = solver.fresh();
@@ -265,7 +269,10 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }
 
-pub fn regs_for_state<'ir, B: BV>(shared_state: &SharedState<'ir, B>, frame: Frame<'ir, B>) -> Vec<(String, RegSource)> {
+pub fn regs_for_state<'ir, B: BV>(
+    shared_state: &SharedState<'ir, B>,
+    frame: Frame<'ir, B>,
+) -> Vec<(String, RegSource)> {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let mut regs: Vec<String> = (0..31).map(|r| format!("R{}", r)).collect();
     let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| r.to_string()).collect();
@@ -273,10 +280,14 @@ pub fn regs_for_state<'ir, B: BV>(shared_state: &SharedState<'ir, B>, frame: Fra
 
     let mut reg_sources = vec![];
     for reg in regs {
-        let ex_var =
-            shared_state.symtab.get(&zencode::encode(&reg)).expect(&format!("Register {} missing during setup", reg));
-        let ex_val =
-            local_frame.regs_mut().get_mut(&ex_var).expect(&format!("No value for register {} during setup", reg));
+        let ex_var = shared_state
+            .symtab
+            .get(&zencode::encode(&reg))
+            .unwrap_or_else(|| panic!("Register {} missing during setup", reg));
+        let ex_val = local_frame
+            .regs_mut()
+            .get_mut(&ex_var)
+            .unwrap_or_else(|| panic!("No value for register {} during setup", reg));
         match ex_val {
             UVal::Uninit(Ty::Bits(64)) => {
                 reg_sources.push((reg, RegSource::Uninit));
@@ -285,7 +296,9 @@ pub fn regs_for_state<'ir, B: BV>(shared_state: &SharedState<'ir, B>, frame: Fra
                 reg_sources.push((reg, RegSource::Symbolic(*var)));
             }
             UVal::Init(Val::Bits(bits)) => {
-                let rsrc = RegSource::Concrete(bits.try_into().expect(&format!("Value {} for register {} too large", bits, reg)));
+                let rsrc = RegSource::Concrete(
+                    bits.try_into().unwrap_or_else(|_| panic!("Value {} for register {} too large", bits, reg)),
+                );
                 reg_sources.push((reg, rsrc));
             }
             _ => panic!("Bad value for register {} in setup", reg),
@@ -374,8 +387,10 @@ pub fn setup_opcode<B: BV>(
             Box::new(Exp::Bits64(opcode.try_into().unwrap() & opcode_mask as u64, opcode.len())),
         )));
     } else {
-        solver
-            .add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(Exp::Bits64(opcode.try_into().unwrap(), opcode.len())))));
+        solver.add(Def::Assert(Exp::Eq(
+            Box::new(Exp::Var(opcode_var)),
+            Box::new(Exp::Bits64(opcode.try_into().unwrap(), opcode.len())),
+        )));
     }
     let read_exp = smt_value(&read_val).unwrap();
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(read_exp))));
@@ -398,7 +413,8 @@ pub fn run_model_instruction<'ir, B: BV>(
 
     let local_frame = executor::unfreeze_frame(frame);
 
-    let mut task = local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
+    let mut task =
+        local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
     task.set_stop_functions(stop_set);
 
     let queue = Arc::new(SegQueue::new());
@@ -413,7 +429,7 @@ pub fn run_model_instruction<'ir, B: BV>(
         &move |tid, task_id, result, shared_state, solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             let mut events = simplify(solver.trace());
-            let events: Vec<Event<B>> = events.drain(..).map(|ev| ev.clone()).collect();
+            let events: Vec<Event<B>> = events.drain(..).cloned().collect();
             match result {
                 Ok((val, frame)) => {
                     if let Some((ex_val, ex_loc)) = frame.get_exception() {
