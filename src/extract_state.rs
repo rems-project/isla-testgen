@@ -35,6 +35,7 @@ use std::ops::Range;
 use crate::target::Target;
 
 use isla_lib::concrete::BV;
+use isla_lib::config::ISAConfig;
 use isla_lib::error::ExecError;
 use isla_lib::ir;
 use isla_lib::ir::{Name, Ty, Val};
@@ -57,13 +58,30 @@ fn bits_to_bv<B: BV>(bits: &[bool]) -> B {
     bv
 }
 
-fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<B>, ExecError> {
+#[derive(Clone, Copy, Debug)]
+pub enum GroundVal<B> {
+    Bool(bool),
+    Bits(B),
+}
+
+impl<B: BV> std::fmt::Display for GroundVal<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            GroundVal::Bool(true) => write!(f, "true"),
+            GroundVal::Bool(false) => write!(f, "false"),
+            GroundVal::Bits(bs) => std::fmt::Display::fmt(&bs, f),
+        }
+    }
+}
+
+fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
     let exp = smt_value(val)?;
     match model.get_exp(&exp)? {
-        Some(Exp::Bits64(bits, len)) => Ok(Some(B::new(bits, len))),
-        Some(Exp::Bits(bits)) => Ok(Some(bits_to_bv(&bits))),
+        Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
+        Some(Exp::Bits(bits)) => Ok(Some(GroundVal::Bits(bits_to_bv(&bits)))),
+        Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
         None => Ok(None),
-        Some(exp) => Err(ExecError::Z3Error(format!("Bad model value {:?}", exp))),
+        Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),
     }
 }
 
@@ -146,32 +164,29 @@ fn or_pair(x: &mut (u32, u32), (y0, y1): (u32, u32)) {
     x.1 |= y1;
 }
 
-fn iter_bv_types<F, G, T, B: BV>(
+fn iter_struct_types<F, T, B: BV>(
     shared_state: &ir::SharedState<B>,
     f: &mut F,
-    g: &mut G,
     ty: &Ty<Name>,
     accessors: &mut Vec<Accessor>,
     v: &Val<B>,
     r: &mut T,
 ) where
-    F: FnMut(u32, &Vec<Accessor>, &Val<B>, &mut T),
-    G: FnMut(&Ty<Name>, &Vec<Accessor>, &Val<B>, &mut T),
+    F: FnMut(&Ty<Name>, &Vec<Accessor>, &Val<B>, &mut T),
 {
     match ty {
-        Ty::Bits(sz) => f(*sz, accessors, v, r),
         Ty::Struct(name) => match v {
             Val::Struct(field_vals) => {
                 let fields = shared_state.structs.get(name).unwrap();
                 for (field, ty) in fields {
                     accessors.push(Accessor::Field(*field));
-                    iter_bv_types(shared_state, f, g, ty, accessors, field_vals.get(field).unwrap(), r);
+                    iter_struct_types(shared_state, f, ty, accessors, field_vals.get(field).unwrap(), r);
                     accessors.pop();
                 }
             }
             _ => panic!("Struct type, non-struct value {:?}", v),
         },
-        _ => g(ty, accessors, v, r),
+        _ => f(ty, accessors, v, r),
     }
 }
 
@@ -179,6 +194,7 @@ fn iter_bv_types<F, G, T, B: BV>(
 /// that happen during initialisation are not included in the pre-state.
 pub fn interrogate_model<B: BV, T: Target>(
     _target: &T,
+    isa_config: &ISAConfig<B>,
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<B>,
     register_types: &HashMap<Name, Ty<Name>>,
@@ -210,10 +226,30 @@ pub fn interrogate_model<B: BV, T: Target>(
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     // TODO: field accesses
-    let mut initial_registers: HashMap<(Name, Vec<Accessor>), B> = HashMap::new();
-    let mut current_registers: HashMap<(Name, Vec<Accessor>), (bool, Option<B>)> = HashMap::new();
+    let mut initial_registers: HashMap<(Name, Vec<Accessor>), GroundVal<B>> = HashMap::new();
+    let mut current_registers: HashMap<(Name, Vec<Accessor>), (bool, Option<GroundVal<B>>)> = HashMap::new();
     let mut symbolic_init_registers: HashMap<(Name, Vec<Accessor>), Sym> = HashMap::new();
     let mut skipped_register_reads: HashSet<(Name, Vec<Accessor>)> = HashSet::new();
+
+    // Assume the harness doesn't need to do these
+    // TODO: something more subtle, maybe configuration registers don't need set, but others do
+    for (reg, val) in &isa_config.default_registers {
+        let gval = match val {
+            Val::Bool(b) => Some(GroundVal::Bool(*b)),
+            Val::Bits(bs) => Some(GroundVal::Bits(*bs)),
+            _ => None,
+        };
+        match gval {
+            Some(gval) => {
+                current_registers.insert((*reg, vec![]), (false, Some(gval)));
+            }
+            None => eprintln!(
+                "Warning: don't know how to deal with default value {:?} for register {}",
+                val,
+                shared_state.symtab.to_str(*reg)
+            ),
+        }
+    }
 
     // TODO: consider read/writes which just modify part of a
     // register, and later allowing initialised resources to be
@@ -241,10 +277,14 @@ pub fn interrogate_model<B: BV, T: Target>(
                         .unwrap_or_else(|| panic!("Register {} missing during extract_state", reg));
                     current_registers.remove(&(reg_name, Vec::new()));
                 }
-                let address = get_model_val(&mut model, address)?.expect("Arbitrary address");
+                let address = match get_model_val(&mut model, address)? {
+                    Some(GroundVal::Bits(bs)) => bs,
+                    Some(GroundVal::Bool(_)) => panic!("Memory read address was a boolean?!"),
+                    None => panic!("Arbitrary memory read address"),
+                };
                 let val = get_model_val(&mut model, value)?;
                 match val {
-                    Some(val) => {
+                    Some(GroundVal::Bits(val)) => {
                         let vals = val.to_le_bytes();
                         if 8 * *bytes == val.len() {
                             for i in 0..*bytes {
@@ -258,19 +298,25 @@ pub fn interrogate_model<B: BV, T: Target>(
                             return Err(ExecError::Type("Memory read had wrong number of bytes"));
                         }
                     }
+                    Some(GroundVal::Bool(_)) => panic!("Memory read returned a boolean?!"),
                     None => eprintln!("Ambivalent read of {} bytes from {:x}", bytes, address),
                 }
             }
             Event::WriteMem { value: _, write_kind: _, address, data, bytes } => {
-                let address = get_model_val(&mut model, address)?.expect("Arbitrary address");
+                let address = match get_model_val(&mut model, address)? {
+                    Some(GroundVal::Bits(bs)) => bs,
+                    Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),
+                    None => panic!("Arbitrary memory write address"),
+                };
                 let val = get_model_val(&mut model, data)?;
                 match val {
-                    Some(val) => {
+                    Some(GroundVal::Bits(val)) => {
                         let vals = val.to_le_bytes();
                         for i in 0..*bytes {
                             current_memory.insert(address.try_into()? + i as u64, Some(vals[i as usize]));
                         }
                     }
+                    Some(GroundVal::Bool(_)) => panic!("Memory write value was a boolean?!"),
                     None => {
                         eprintln!("Ambivalent write of {} bytes to {:x}", bytes, address);
                         for i in 0..*bytes {
@@ -280,59 +326,58 @@ pub fn interrogate_model<B: BV, T: Target>(
                 }
             }
             Event::ReadReg(reg, accessors, value) => {
-                let mut process_read_bits = |_sz: u32,
-                                             accessors: &Vec<Accessor>,
-                                             value: &Val<B>,
-                                             skipped: &mut HashSet<_>| {
-                    let key = (*reg, accessors.clone());
-                    if skipped.contains(&key) {
-                        return;
-                    };
-                    if init_complete {
-                        let val = get_model_val(&mut model, value).expect("get_model_val");
-                        if current_registers.insert(key.clone(), (true, val)).is_none() {
-                            match val {
-                                Some(val) => {
-                                    initial_registers.insert(key, val);
-                                }
-                                None => eprintln!("Ambivalent read of register {}", regacc_to_str(shared_state, &key)),
-                            }
-                        }
-                    } else {
-                        // If we see a symbolic read during initialisation before a write,
-                        // remember it in case it gets written back - it may be a field that
-                        // hasn't been changed.
-                        match value {
-                            Val::Symbolic(var) => {
-                                if !current_registers.contains_key(&key) {
-                                    symbolic_init_registers.insert(key, *var);
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
-                };
-                let mut process_read_unsupported =
+                let mut process_read_bits =
                     |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
-                        if skipped.contains(&key) || !init_complete {
+                        if skipped.contains(&key) {
                             return;
                         };
-                        eprintln!(
-                            "Skipping read of {} with value {:?} due to unsupported type {:?}",
-                            regacc_to_str(shared_state, &key),
-                            value,
-                            ty
-                        );
-                        skipped.insert(key);
+                        if init_complete {
+                            match ty {
+                                Ty::Bits(_) | Ty::Bool => {
+                                    let val = get_model_val(&mut model, value).expect("get_model_val");
+                                    if current_registers.insert(key.clone(), (true, val)).is_none() {
+                                        match val {
+                                            Some(val) => {
+                                                initial_registers.insert(key, val);
+                                            }
+                                            None => eprintln!(
+                                                "Ambivalent read of register {}",
+                                                regacc_to_str(shared_state, &key)
+                                            ),
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    eprintln!(
+                                        "Skipping read of {} with value {:?} due to unsupported type {:?}",
+                                        regacc_to_str(shared_state, &key),
+                                        value,
+                                        ty
+                                    );
+                                    skipped.insert(key);
+                                }
+                            }
+                        } else {
+                            // If we see a symbolic read during initialisation before a write,
+                            // remember it in case it gets written back - it may be a field that
+                            // hasn't been changed.
+                            match value {
+                                Val::Symbolic(var) => {
+                                    if !current_registers.contains_key(&key) {
+                                        symbolic_init_registers.insert(key, *var);
+                                    }
+                                }
+                                _ => (),
+                            }
+                        }
                     };
                 match register_types.get(reg) {
                     Some(ty) => {
                         let (read_ty, read_value) = apply_accessors(shared_state, ty, accessors, &value);
-                        iter_bv_types(
+                        iter_struct_types(
                             shared_state,
                             &mut process_read_bits,
-                            &mut process_read_unsupported,
                             &read_ty,
                             &mut accessors.clone(),
                             &read_value,
@@ -343,7 +388,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                 }
             }
             Event::WriteReg(reg, accessors, value) => {
-                let mut process_write = |_sz: u32, accessors: &Vec<Accessor>, value: &Val<B>, _: &mut ()| {
+                let mut process_write = |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B>, _: &mut ()| {
                     let key = (*reg, accessors.clone());
                     let record = init_complete
                         || match value {
@@ -354,19 +399,21 @@ pub fn interrogate_model<B: BV, T: Target>(
                             _ => true,
                         };
                     if record {
-                        let val = get_model_val(&mut model, value).expect("get_model_val");
-                        current_registers.insert(key, (init_complete, val));
+                        match ty {
+                            Ty::Bits(_) | Ty::Bool => {
+                                let val = get_model_val(&mut model, value).expect("get_model_val");
+                                current_registers.insert(key, (init_complete, val));
+                            }
+                            _ => (),
+                        }
                     }
                 };
-                let mut process_unsupported =
-                    |_ty: &Ty<Name>, _accessors: &Vec<Accessor>, _value: &Val<B>, _: &mut ()| ();
                 match register_types.get(reg) {
                     Some(ty) => {
                         let (assigned_ty, assigned_value) = apply_accessors(shared_state, ty, accessors, &value);
-                        iter_bv_types(
+                        iter_struct_types(
                             shared_state,
                             &mut process_write,
-                            &mut process_unsupported,
                             &assigned_ty,
                             &mut accessors.clone(),
                             &assigned_value,
@@ -442,16 +489,24 @@ pub fn interrogate_model<B: BV, T: Target>(
     for ((reg, accessor), value) in &initial_registers {
         let name = shared_state.symtab.to_str(*reg);
         if let Some(reg_num) = T::is_gpr(name) {
-            pre_gprs.push((reg_num, *value));
+            match value {
+                GroundVal::Bits(v) => pre_gprs.push((reg_num, *v)),
+                GroundVal::Bool(_) => panic!("GPR {} has boolean value", name),
+            }
         } else if name == "zPSTATE" {
             if let [Accessor::Field(id)] = *accessor.as_slice() {
-                let bits: u32 = value.try_into()? as u32;
-                match shared_state.symtab.to_str(id) {
-                    "zN" => pre_nzcv |= bits << 3,
-                    "zZ" => pre_nzcv |= bits << 2,
-                    "zC" => pre_nzcv |= bits << 1,
-                    "zV" => pre_nzcv |= bits,
-                    _ => (),
+                match *value {
+                    GroundVal::Bits(v) => {
+                        let bits: u32 = v.try_into()? as u32;
+                        match shared_state.symtab.to_str(id) {
+                            "zN" => pre_nzcv |= bits << 3,
+                            "zZ" => pre_nzcv |= bits << 2,
+                            "zC" => pre_nzcv |= bits << 1,
+                            "zV" => pre_nzcv |= bits,
+                            _ => (),
+                        }
+                    }
+                    _ => return Err(ExecError::Type("PSTATE")),
                 }
             }
         }
@@ -465,17 +520,25 @@ pub fn interrogate_model<B: BV, T: Target>(
             if name.starts_with("zR") {
                 let reg_str = &name[2..];
                 if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
-                    post_gprs.push((reg_num, *value));
+                    match value {
+                        GroundVal::Bits(v) => post_gprs.push((reg_num, *v)),
+                        GroundVal::Bool(_) => panic!("GPR {} has boolean value", name),
+                    }
                 }
             } else if name == "zPSTATE" {
                 if let [Accessor::Field(id)] = *accessor.as_slice() {
-                    let bits: u32 = value.try_into()? as u32;
-                    match shared_state.symtab.to_str(id) {
-                        "zN" => or_pair(&mut post_nzcv, (8, bits << 3)),
-                        "zZ" => or_pair(&mut post_nzcv, (4, bits << 2)),
-                        "zC" => or_pair(&mut post_nzcv, (2, bits << 1)),
-                        "zV" => or_pair(&mut post_nzcv, (1, bits)),
-                        _ => (),
+                    match *value {
+                        GroundVal::Bits(v) => {
+                            let bits: u32 = v.try_into()? as u32;
+                            match shared_state.symtab.to_str(id) {
+                                "zN" => or_pair(&mut post_nzcv, (8, bits << 3)),
+                                "zZ" => or_pair(&mut post_nzcv, (4, bits << 2)),
+                                "zC" => or_pair(&mut post_nzcv, (2, bits << 1)),
+                                "zV" => or_pair(&mut post_nzcv, (1, bits)),
+                                _ => (),
+                            }
+                        }
+                        _ => return Err(ExecError::Type("PSTATE")),
                     }
                 }
             }

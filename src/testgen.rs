@@ -301,6 +301,7 @@ fn testgen_main<T: Target, B: BV>(
     println!("Initial state extracted from events:");
     let initial_state = extract_state::interrogate_model(
         &target,
+        &isa_config,
         checkpoint,
         &shared_state,
         &register_types,
