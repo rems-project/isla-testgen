@@ -74,6 +74,12 @@ impl<B: BV> std::fmt::Display for GroundVal<B> {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum GVAccessor {
+    Field(Name),
+    Element(usize),
+}
+
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
     let exp = smt_value(val)?;
     match model.get_exp(&exp)? {
@@ -96,11 +102,14 @@ pub struct PrePostStates<B> {
     pub post_nzcv_value: u32,
 }
 
-fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<Accessor>)) -> String {
+fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<GVAccessor>)) -> String {
     let (reg, acc) = regacc;
-    let reg_str = shared_state.symtab.to_str(*reg);
-    let fields = acc.iter().map(|Accessor::Field(a)| shared_state.symtab.to_str(*a));
-    let parts: Vec<&str> = iter::once(reg_str).chain(fields).collect();
+    let reg_str = shared_state.symtab.to_str(*reg).to_string();
+    let fields = acc.iter().map(|acc| match acc {
+        GVAccessor::Field(a) => shared_state.symtab.to_str(*a).to_string(),
+        GVAccessor::Element(i) => i.to_string(),
+    });
+    let parts: Vec<String> = iter::once(reg_str).chain(fields).collect();
     parts.join(".")
 }
 
@@ -159,6 +168,15 @@ fn apply_accessors<B: BV>(
     (ty.clone(), value.clone())
 }
 
+fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor> {
+    accessors
+        .iter()
+        .map(|x| match x {
+            Accessor::Field(n) => GVAccessor::Field(*n),
+        })
+        .collect()
+}
+
 fn or_pair(x: &mut (u32, u32), (y0, y1): (u32, u32)) {
     x.0 |= y0;
     x.1 |= y1;
@@ -168,23 +186,33 @@ fn iter_struct_types<F, T, B: BV>(
     shared_state: &ir::SharedState<B>,
     f: &mut F,
     ty: &Ty<Name>,
-    accessors: &mut Vec<Accessor>,
+    accessors: &mut Vec<GVAccessor>,
     v: &Val<B>,
     r: &mut T,
 ) where
-    F: FnMut(&Ty<Name>, &Vec<Accessor>, &Val<B>, &mut T),
+    F: FnMut(&Ty<Name>, &Vec<GVAccessor>, &Val<B>, &mut T),
 {
     match ty {
         Ty::Struct(name) => match v {
             Val::Struct(field_vals) => {
                 let fields = shared_state.structs.get(name).unwrap();
                 for (field, ty) in fields {
-                    accessors.push(Accessor::Field(*field));
+                    accessors.push(GVAccessor::Field(*field));
                     iter_struct_types(shared_state, f, ty, accessors, field_vals.get(field).unwrap(), r);
                     accessors.pop();
                 }
             }
             _ => panic!("Struct type, non-struct value {:?}", v),
+        },
+        Ty::FixedVector(_, element_type) => match v {
+            Val::Vector(elements) => {
+                for (i, element) in elements.iter().enumerate() {
+                    accessors.push(GVAccessor::Element(i));
+                    iter_struct_types(shared_state, f, element_type, accessors, element, r);
+                    accessors.pop();
+                }
+            }
+            _ => panic!("Vector type, non-vector value {:?}", v),
         },
         _ => f(ty, accessors, v, r),
     }
@@ -226,10 +254,10 @@ pub fn interrogate_model<B: BV, T: Target>(
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     // TODO: field accesses
-    let mut initial_registers: HashMap<(Name, Vec<Accessor>), GroundVal<B>> = HashMap::new();
-    let mut current_registers: HashMap<(Name, Vec<Accessor>), (bool, Option<GroundVal<B>>)> = HashMap::new();
-    let mut symbolic_init_registers: HashMap<(Name, Vec<Accessor>), Sym> = HashMap::new();
-    let mut skipped_register_reads: HashSet<(Name, Vec<Accessor>)> = HashSet::new();
+    let mut initial_registers: HashMap<(Name, Vec<GVAccessor>), GroundVal<B>> = HashMap::new();
+    let mut current_registers: HashMap<(Name, Vec<GVAccessor>), (bool, Option<GroundVal<B>>)> = HashMap::new();
+    let mut symbolic_init_registers: HashMap<(Name, Vec<GVAccessor>), Sym> = HashMap::new();
+    let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor>)> = HashSet::new();
 
     // Assume the harness doesn't need to do these
     // TODO: something more subtle, maybe configuration registers don't need set, but others do
@@ -327,7 +355,7 @@ pub fn interrogate_model<B: BV, T: Target>(
             }
             Event::ReadReg(reg, accessors, value) => {
                 let mut process_read_bits =
-                    |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B>, skipped: &mut HashSet<_>| {
+                    |ty: &Ty<Name>, accessors: &Vec<GVAccessor>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
                         if skipped.contains(&key) {
                             return;
@@ -379,7 +407,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                             shared_state,
                             &mut process_read_bits,
                             &read_ty,
-                            &mut accessors.clone(),
+                            &mut make_gv_accessors(accessors),
                             &read_value,
                             &mut skipped_register_reads,
                         )
@@ -388,7 +416,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                 }
             }
             Event::WriteReg(reg, accessors, value) => {
-                let mut process_write = |ty: &Ty<Name>, accessors: &Vec<Accessor>, value: &Val<B>, _: &mut ()| {
+                let mut process_write = |ty: &Ty<Name>, accessors: &Vec<GVAccessor>, value: &Val<B>, _: &mut ()| {
                     let key = (*reg, accessors.clone());
                     let record = init_complete
                         || match value {
@@ -415,7 +443,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                             shared_state,
                             &mut process_write,
                             &assigned_ty,
-                            &mut accessors.clone(),
+                            &mut make_gv_accessors(accessors),
                             &assigned_value,
                             &mut (),
                         )
@@ -494,7 +522,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                 GroundVal::Bool(_) => panic!("GPR {} has boolean value", name),
             }
         } else if name == "zPSTATE" {
-            if let [Accessor::Field(id)] = *accessor.as_slice() {
+            if let [GVAccessor::Field(id)] = *accessor.as_slice() {
                 match *value {
                     GroundVal::Bits(v) => {
                         let bits: u32 = v.try_into()? as u32;
@@ -526,7 +554,7 @@ pub fn interrogate_model<B: BV, T: Target>(
                     }
                 }
             } else if name == "zPSTATE" {
-                if let [Accessor::Field(id)] = *accessor.as_slice() {
+                if let [GVAccessor::Field(id)] = *accessor.as_slice() {
                     match *value {
                         GroundVal::Bits(v) => {
                             let bits: u32 = v.try_into()? as u32;
