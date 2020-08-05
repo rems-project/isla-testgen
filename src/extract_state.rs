@@ -75,8 +75,8 @@ impl<B: BV> std::fmt::Display for GroundVal<B> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum GVAccessor {
-    Field(Name),
+pub enum GVAccessor<N> {
+    Field(N),
     Element(usize),
 }
 
@@ -91,18 +91,15 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
     }
 }
 
-pub struct PrePostStates<B> {
+pub struct PrePostStates<'ir, B> {
     pub code: Vec<(Range<memory::Address>, Vec<u8>)>,
     pub pre_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
-    pub pre_gprs: Vec<(u32, B)>,
-    pub pre_nzcv: u32,
+    pub pre_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
     pub post_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
-    pub post_gprs: Vec<(u32, B)>,
-    pub post_nzcv_mask: u32,
-    pub post_nzcv_value: u32,
+    pub post_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
 }
 
-fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<GVAccessor>)) -> String {
+fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<GVAccessor<Name>>)) -> String {
     let (reg, acc) = regacc;
     let reg_str = shared_state.symtab.to_str(*reg).to_string();
     let fields = acc.iter().map(|acc| match acc {
@@ -111,6 +108,41 @@ fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<G
     });
     let parts: Vec<String> = iter::once(reg_str).chain(fields).collect();
     parts.join(".")
+}
+
+fn regacc_name<'ir, B>(
+    shared_state: &ir::SharedState<'ir, B>,
+    name: Name,
+    accessor: &Vec<GVAccessor<Name>>,
+) -> (&'ir str, Vec<GVAccessor<&'ir str>>) {
+    (
+        shared_state.symtab.to_str(name),
+        accessor
+            .iter()
+            .map(|acc| match acc {
+                GVAccessor::Field(field_name) => GVAccessor::Field(shared_state.symtab.to_str(*field_name)),
+                GVAccessor::Element(i) => GVAccessor::Element(*i),
+            })
+            .collect(),
+    )
+}
+
+fn regacc_int<B>(
+    shared_state: &ir::SharedState<B>,
+    (name, accessor): &(String, Vec<GVAccessor<String>>),
+) -> (Name, Vec<GVAccessor<Name>>) {
+    (
+        shared_state.symtab.get(&zencode::encode(name)).expect("Register missing"),
+        accessor
+            .iter()
+            .map(|acc| match acc {
+                GVAccessor::Field(field_name) => {
+                    GVAccessor::Field(shared_state.symtab.get(field_name).expect("Field missing"))
+                }
+                GVAccessor::Element(i) => GVAccessor::Element(*i),
+            })
+            .collect(),
+    )
 }
 
 fn batch_memory<T, F>(memory: &BTreeMap<u64, T>, content: &F) -> Vec<(Range<memory::Address>, Vec<u8>)>
@@ -168,7 +200,7 @@ fn apply_accessors<B: BV>(
     (ty.clone(), value.clone())
 }
 
-fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor> {
+fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor<Name>> {
     accessors
         .iter()
         .map(|x| match x {
@@ -177,20 +209,15 @@ fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor> {
         .collect()
 }
 
-fn or_pair(x: &mut (u32, u32), (y0, y1): (u32, u32)) {
-    x.0 |= y0;
-    x.1 |= y1;
-}
-
 fn iter_struct_types<F, T, B: BV>(
     shared_state: &ir::SharedState<B>,
     f: &mut F,
     ty: &Ty<Name>,
-    accessors: &mut Vec<GVAccessor>,
+    accessors: &mut Vec<GVAccessor<Name>>,
     v: &Val<B>,
     r: &mut T,
 ) where
-    F: FnMut(&Ty<Name>, &Vec<GVAccessor>, &Val<B>, &mut T),
+    F: FnMut(&Ty<Name>, &Vec<GVAccessor<Name>>, &Val<B>, &mut T),
 {
     match ty {
         Ty::Struct(name) => match v {
@@ -220,15 +247,15 @@ fn iter_struct_types<F, T, B: BV>(
 
 /// Extract pre- and post-states from the event trace and the model.  Writes
 /// that happen during initialisation are not included in the pre-state.
-pub fn interrogate_model<B: BV, T: Target>(
+pub fn interrogate_model<'ir, B: BV, T: Target>(
     _target: &T,
     isa_config: &ISAConfig<B>,
     checkpoint: Checkpoint<B>,
-    shared_state: &ir::SharedState<B>,
+    shared_state: &ir::SharedState<'ir, B>,
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
-) -> Result<PrePostStates<B>, ExecError> {
+) -> Result<PrePostStates<'ir, B>, ExecError> {
     let cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
@@ -248,16 +275,15 @@ pub fn interrogate_model<B: BV, T: Target>(
     let mut model = Model::new(&solver);
     log!(log::VERBOSE, format!("Model: {:?}", model));
 
-    let mut events = isla_lib::simplify::simplify(solver.trace());
+    let mut events = solver.trace().to_vec();
     let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
 
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
-    // TODO: field accesses
-    let mut initial_registers: HashMap<(Name, Vec<GVAccessor>), GroundVal<B>> = HashMap::new();
-    let mut current_registers: HashMap<(Name, Vec<GVAccessor>), (bool, Option<GroundVal<B>>)> = HashMap::new();
-    let mut symbolic_init_registers: HashMap<(Name, Vec<GVAccessor>), Sym> = HashMap::new();
-    let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor>)> = HashSet::new();
+    let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
+    let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), (bool, Option<GroundVal<B>>)> = HashMap::new();
+    let mut symbolic_init_registers: HashMap<(Name, Vec<GVAccessor<Name>>), Sym> = HashMap::new();
+    let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor<Name>>)> = HashSet::new();
 
     // Assume the harness doesn't need to do these
     // TODO: something more subtle, maybe configuration registers don't need set, but others do
@@ -279,9 +305,6 @@ pub fn interrogate_model<B: BV, T: Target>(
         }
     }
 
-    // TODO: consider read/writes which just modify part of a
-    // register, and later allowing initialised resources to be
-    // modified by the test harness.
     let mut init_complete = false;
 
     let is_ifetch = |val: &Val<B>| match val {
@@ -292,18 +315,16 @@ pub fn interrogate_model<B: BV, T: Target>(
     for event in events {
         match &event {
             Event::ReadMem { value, read_kind, address, bytes } if init_complete || is_ifetch(read_kind) => {
-                init_complete = true;
-                // We explicitly reset these registers to symbolic variables after
-                // symbolic execution of the model initialisation, so throw away
-                // any current value, especially as we want to find out if we need
-                // to set them in the actual test and so should not ignore the next
-                // write.
-                for reg in T::regs() {
-                    let reg_name = shared_state
-                        .symtab
-                        .get(&zencode::encode(&reg))
-                        .unwrap_or_else(|| panic!("Register {} missing during extract_state", reg));
-                    current_registers.remove(&(reg_name, Vec::new()));
+                if !init_complete {
+                    init_complete = true;
+                    // We explicitly reset these registers to symbolic variables after
+                    // symbolic execution of the model initialisation, so throw away
+                    // any current value, especially as we want to find out if we need
+                    // to set them in the actual test and so should not ignore the next
+                    // write.
+                    for regacc in T::regs() {
+                        current_registers.remove(&regacc_int(shared_state, &regacc));
+                    }
                 }
                 let address = match get_model_val(&mut model, address)? {
                     Some(GroundVal::Bits(bs)) => bs,
@@ -355,7 +376,7 @@ pub fn interrogate_model<B: BV, T: Target>(
             }
             Event::ReadReg(reg, accessors, value) => {
                 let mut process_read_bits =
-                    |ty: &Ty<Name>, accessors: &Vec<GVAccessor>, value: &Val<B>, skipped: &mut HashSet<_>| {
+                    |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
                         if skipped.contains(&key) {
                             return;
@@ -416,26 +437,27 @@ pub fn interrogate_model<B: BV, T: Target>(
                 }
             }
             Event::WriteReg(reg, accessors, value) => {
-                let mut process_write = |ty: &Ty<Name>, accessors: &Vec<GVAccessor>, value: &Val<B>, _: &mut ()| {
-                    let key = (*reg, accessors.clone());
-                    let record = init_complete
-                        || match value {
-                            Val::Symbolic(new_var) => match symbolic_init_registers.get(&key) {
-                                Some(old_var) => old_var != new_var,
+                let mut process_write =
+                    |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, _: &mut ()| {
+                        let key = (*reg, accessors.clone());
+                        let record = init_complete
+                            || match value {
+                                Val::Symbolic(new_var) => match symbolic_init_registers.get(&key) {
+                                    Some(old_var) => old_var != new_var,
+                                    _ => true,
+                                },
                                 _ => true,
-                            },
-                            _ => true,
-                        };
-                    if record {
-                        match ty {
-                            Ty::Bits(_) | Ty::Bool => {
-                                let val = get_model_val(&mut model, value).expect("get_model_val");
-                                current_registers.insert(key, (init_complete, val));
+                            };
+                        if record {
+                            match ty {
+                                Ty::Bits(_) | Ty::Bool => {
+                                    let val = get_model_val(&mut model, value).expect("get_model_val");
+                                    current_registers.insert(key, (init_complete, val));
+                                }
+                                _ => (),
                             }
-                            _ => (),
                         }
-                    }
-                };
+                    };
                 match register_types.get(reg) {
                     Some(ty) => {
                         let (assigned_ty, assigned_value) = apply_accessors(shared_state, ty, accessors, &value);
@@ -454,8 +476,7 @@ pub fn interrogate_model<B: BV, T: Target>(
             Event::Instr(_) if !init_complete => {
                 // We should see the instruction fetch first and look
                 // at events from then on
-                eprintln!("Instruction announced without an ifetch");
-                init_complete = true;
+                panic!("Instruction announced without an ifetch");
             }
             _ => (),
         }
@@ -512,77 +533,22 @@ pub fn interrogate_model<B: BV, T: Target>(
         }
     }
 
-    let mut pre_gprs = Vec::new();
-    let mut pre_nzcv = 0u32;
-    for ((reg, accessor), value) in &initial_registers {
-        let name = shared_state.symtab.to_str(*reg);
-        if let Some(reg_num) = T::is_gpr(name) {
-            match value {
-                GroundVal::Bits(v) => pre_gprs.push((reg_num, *v)),
-                GroundVal::Bool(_) => panic!("GPR {} has boolean value", name),
-            }
-        } else if name == "zPSTATE" {
-            if let [GVAccessor::Field(id)] = *accessor.as_slice() {
-                match *value {
-                    GroundVal::Bits(v) => {
-                        let bits: u32 = v.try_into()? as u32;
-                        match shared_state.symtab.to_str(id) {
-                            "zN" => pre_nzcv |= bits << 3,
-                            "zZ" => pre_nzcv |= bits << 2,
-                            "zC" => pre_nzcv |= bits << 1,
-                            "zV" => pre_nzcv |= bits,
-                            _ => (),
-                        }
-                    }
-                    _ => return Err(ExecError::Type("PSTATE")),
-                }
-            }
-        }
-    }
-
-    let mut post_gprs = Vec::new();
-    let mut post_nzcv = (0u32, 0u32);
-    for ((reg, accessor), (_post_init, opt_value)) in &current_registers {
-        if let Some(value) = opt_value {
-            let name = shared_state.symtab.to_str(*reg);
-            if name.starts_with("zR") {
-                let reg_str = &name[2..];
-                if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
-                    match value {
-                        GroundVal::Bits(v) => post_gprs.push((reg_num, *v)),
-                        GroundVal::Bool(_) => panic!("GPR {} has boolean value", name),
-                    }
-                }
-            } else if name == "zPSTATE" {
-                if let [GVAccessor::Field(id)] = *accessor.as_slice() {
-                    match *value {
-                        GroundVal::Bits(v) => {
-                            let bits: u32 = v.try_into()? as u32;
-                            match shared_state.symtab.to_str(id) {
-                                "zN" => or_pair(&mut post_nzcv, (8, bits << 3)),
-                                "zZ" => or_pair(&mut post_nzcv, (4, bits << 2)),
-                                "zC" => or_pair(&mut post_nzcv, (2, bits << 1)),
-                                "zV" => or_pair(&mut post_nzcv, (1, bits)),
-                                _ => (),
-                            }
-                        }
-                        _ => return Err(ExecError::Type("PSTATE")),
-                    }
-                }
-            }
-        }
-    }
-    let (post_nzcv_mask, post_nzcv_value) = post_nzcv;
+    let pre_registers =
+        initial_registers.iter().map(|((reg, acc), gv)| (regacc_name(shared_state, *reg, acc), *gv)).collect();
+    let post_registers = current_registers
+        .iter()
+        .filter_map(|((reg, acc), (_, optional_gv))| match optional_gv {
+            Some(gv) => Some((regacc_name(shared_state, *reg, acc), *gv)),
+            None => None,
+        })
+        .collect();
     let post_memory = batch_memory(&current_memory, &(|x: &Option<u8>| *x));
 
     Ok(PrePostStates {
         pre_memory: initial_symbolic_memory,
         code: initial_symbolic_code_memory,
-        pre_gprs,
-        pre_nzcv,
-        post_gprs,
-        post_nzcv_mask,
-        post_nzcv_value,
+        pre_registers,
+        post_registers,
         post_memory,
     })
 }

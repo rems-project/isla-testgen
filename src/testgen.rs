@@ -231,7 +231,7 @@ fn testgen_main<T: Target, B: BV>(
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
     let (mut frame, mut checkpoint) =
-        setup_init_regs(&shared_state, frame, checkpoint, T::regs(), &register_types, init_pc, &target);
+        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
 
     let run_instruction_function = T::run_instruction_function();
 
@@ -286,14 +286,13 @@ fn testgen_main<T: Target, B: BV>(
         }
     }
 
-    let (entry_reg, exit_reg, checkpoint) = finalize(&shared_state, &frame, checkpoint);
+    let (entry_reg, exit_reg, checkpoint) = finalize(&target, &shared_state, &frame, checkpoint);
 
     eprintln!("Complete");
 
     if dump_events {
-        use isla_lib::simplify::simplify;
         let trace = checkpoint.trace().as_ref().expect("No trace!");
-        let mut events = simplify(trace);
+        let mut events = trace.to_vec();
         let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
         write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
     }
@@ -309,7 +308,7 @@ fn testgen_main<T: Target, B: BV>(
         &symbolic_code_regions,
     )
     .expect("Error extracting state");
-    generate_object::make_asm_files(String::from("test"), initial_state, entry_reg, exit_reg)
+    generate_object::make_asm_files(target, String::from("test"), initial_state, entry_reg, exit_reg)
         .expect("Error generating object file");
     generate_object::build_elf_file(&isa_config, String::from("test"));
 

@@ -34,6 +34,7 @@ use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::extract_state::GVAccessor;
 use crate::target::Target;
 
 use isla_lib::concrete::BV;
@@ -42,7 +43,6 @@ use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame};
 use isla_lib::ir::*;
 use isla_lib::memory::{Memory, SmtKind};
-use isla_lib::simplify::simplify;
 use isla_lib::simplify::write_events;
 use isla_lib::smt;
 use isla_lib::smt::smtlib;
@@ -200,11 +200,46 @@ pub enum RegSource {
     Uninit,
 }
 
+// Replace the given subfield of a value with a symbolic variable (if
+// it isn't already), and return the variable.  Used in register
+// initialisation, below.
+fn setup_val<B: BV>(
+    shared_state: &SharedState<B>,
+    mut val: &mut Val<B>,
+    accessor: Vec<GVAccessor<String>>,
+    solver: &mut Solver<B>,
+) -> Sym {
+    for acc in accessor {
+        match acc {
+            GVAccessor::Field(s) => {
+                let name = shared_state.symtab.get(&s).unwrap();
+                match val {
+                    Val::Struct(field_vals) => val = field_vals.get_mut(&name).unwrap(),
+                    _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
+                }
+            }
+            GVAccessor::Element(i) => match val {
+                Val::Vector(elements) => val = &mut elements[i],
+                _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+            },
+        }
+    }
+    match val {
+        Val::Symbolic(var) => *var,
+        Val::Bits(bits) => {
+            let var = solver.fresh();
+            solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(bits.len())));
+            *val = Val::Symbolic(var);
+            var
+        }
+        _ => panic!("Register setup found unsupported value {}", val.to_string(&shared_state.symtab)),
+    }
+}
+
 pub fn setup_init_regs<'ir, B: BV, T: Target>(
     shared_state: &SharedState<'ir, B>,
     frame: Frame<'ir, B>,
     checkpoint: Checkpoint<B>,
-    regs: Vec<String>,
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
     _target: &T,
@@ -214,7 +249,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
     let mut reg_vars = HashMap::new();
 
-    for reg in regs {
+    for (reg, accessor) in T::regs() {
         let ex_var = shared_state
             .symtab
             .get(&zencode::encode(&reg))
@@ -224,23 +259,18 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
             .get_mut(&ex_var)
             .unwrap_or_else(|| panic!("No value for register {} during setup", reg));
         match ex_val {
-            UVal::Uninit(Ty::Bits(n)) => {
-                let var = solver.fresh();
-                solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(*n)));
-                *ex_val = UVal::Init(Val::Symbolic(var));
+            UVal::Uninit(ty) => {
+                let mut v = executor::symbolic(ty, shared_state, &mut solver)
+                    .unwrap_or_else(|err| panic!("Unable to initialise register {}: {}", reg, err));
+                let var = setup_val(shared_state, &mut v, accessor, &mut solver);
+                reg_vars.insert(reg, var);
+                *ex_val = UVal::Init(v)
+            }
+            UVal::Init(v) => {
+                let var = setup_val(shared_state, v, accessor, &mut solver);
                 reg_vars.insert(reg, var);
             }
-            UVal::Init(Val::Symbolic(var)) => {
-                reg_vars.insert(reg, *var);
-            }
-            UVal::Init(Val::Bits(bits)) => {
-                let var = solver.fresh();
-                solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(bits.len())));
-                *ex_val = UVal::Init(Val::Symbolic(var));
-                reg_vars.insert(reg, var);
-            }
-            _ => panic!("Bad value for register {} in setup", reg),
-        }
+        };
     }
 
     let pc_id = shared_state.symtab.lookup("z_PC");
@@ -428,7 +458,7 @@ pub fn run_model_instruction<'ir, B: BV>(
         queue.clone(),
         &move |tid, task_id, result, shared_state, solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
-            let mut events = simplify(solver.trace());
+            let mut events = solver.trace().to_vec();
             let events: Vec<Event<B>> = events.drain(..).cloned().collect();
             match result {
                 Ok((val, frame)) => {
@@ -505,22 +535,39 @@ pub fn run_model_instruction<'ir, B: BV>(
 
 // Find a couple of scratch registers for the harness, and add a branch to one
 // at the end of the test.
-pub fn finalize<B: BV>(
+pub fn finalize<B: BV, T: Target>(
+    _target: &T,
     shared_state: &SharedState<B>,
     frame: &Frame<B>,
     checkpoint: Checkpoint<B>,
 ) -> (u32, u32, Checkpoint<B>) {
     // Find a couple of unused scratch registers for the harness
     let trace = checkpoint.trace().as_ref().expect("No trace!");
-    let mut events = simplify(trace);
+    let mut events = trace.to_vec();
     let mut regs: HashSet<u32> = (0..31).collect();
-    for event in events.drain(..) {
+
+    // TODO: move scratch register selection later, by splitting state
+    // extraction into a symbolic bit then fill in values from the
+    // model afterwards.
+
+    // The events in the processor initialisation aren't relevant, so we take
+    // them from the first instruction fetch.
+    let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
+    let (read_kind_pos, _read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
+
+    let is_ifetch = |val: &Val<B>| match val {
+        Val::Enum(EnumMember { member, .. }) => *member == *read_kind_pos,
+        _ => false,
+    };
+
+    let mut post_init = false;
+    for event in events.drain(..).rev() {
         match event {
+            Event::ReadMem { read_kind, .. } if is_ifetch(read_kind) => post_init = true,
             Event::ReadReg(reg, _, _) | Event::WriteReg(reg, _, _) => {
-                let name = shared_state.symtab.to_str(*reg);
-                if name.starts_with("zR") {
-                    let reg_str = &name[2..];
-                    if let Ok(reg_num) = u32::from_str_radix(reg_str, 10) {
+                if post_init {
+                    let name = shared_state.symtab.to_str(*reg);
+                    if let Some(reg_num) = T::is_gpr(name) {
                         regs.remove(&reg_num);
                     }
                 }

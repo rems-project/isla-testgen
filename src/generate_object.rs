@@ -28,11 +28,13 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::extract_state;
+use crate::extract_state::{GVAccessor, GroundVal, PrePostStates};
+use crate::target::Target;
 
 use isla_lib::concrete::BV;
 use isla_lib::config::ISAConfig;
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt;
@@ -66,12 +68,75 @@ fn write_bytes(asm_file: &mut File, bytes: &[u8]) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-pub fn make_asm_files<B: BV>(
+struct Flags {
+    pre_nzcv: u32,
+    post_nzcv_mask: u32,
+    post_nzcv_value: u32,
+}
+
+fn get_nzcv<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>) -> (u32, u32) {
+    let mut mask = 0u32;
+    let mut value = 0u32;
+    for (flag, bit) in &[("zN", 8), ("zZ", 4), ("zC", 2), ("zV", 1)] {
+        match state.get(&("zPSTATE", vec![GVAccessor::Field(flag)])) {
+            Some(GroundVal::Bits(v)) => {
+                mask |= bit;
+                if !v.is_zero() {
+                    value |= bit;
+                }
+            }
+            Some(_) => panic!("PSTATE flag {} isn't a bitvector", flag),
+            None => (),
+        }
+    }
+    (mask, value)
+}
+
+fn get_flags<B: BV>(pre_post_states: &PrePostStates<B>) -> Flags {
+    let (_, pre_nzcv) = get_nzcv(&pre_post_states.pre_registers);
+    let (post_nzcv_mask, post_nzcv_value) = get_nzcv(&pre_post_states.post_registers);
+    Flags { pre_nzcv, post_nzcv_mask, post_nzcv_value }
+}
+
+fn get_numbered_registers<B: BV>(
+    prefix: &str,
+    pad: bool,
+    max: u32,
+    state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>,
+) -> Vec<(u32, B)> {
+    (0..max)
+        .filter_map(|i| {
+            let name = if pad { format!("{}{:02}", prefix, i) } else { format!("{}{}", prefix, i) };
+            match state.get(&(&name, vec![])) {
+                Some(GroundVal::Bits(bs)) => Some((i, *bs)),
+                Some(v) => panic!("Register {} was expected to be a bitvector, found {}", name, v),
+                None => None,
+            }
+        })
+        .collect()
+}
+
+fn get_vector_registers<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>) -> Vec<(usize, B)> {
+    (0..32)
+        .filter_map(|i| {
+            let name = "z_V";
+            match state.get(&(name, vec![GVAccessor::Element(i)])) {
+                Some(GroundVal::Bits(bs)) => Some((i, *bs)),
+                Some(v) => panic!("Vector register {}.{} was expected to be a bitvector, found {}", name, i, v),
+                None => None,
+            }
+        })
+        .collect()
+}
+
+pub fn make_asm_files<B: BV, T: Target>(
+    _target: T,
     base_name: String,
-    pre_post_states: extract_state::PrePostStates<B>,
+    pre_post_states: PrePostStates<B>,
     entry_reg: u32,
     exit_reg: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let flags = get_flags(&pre_post_states);
     let mut asm_file = File::create(Path::new(&(base_name.clone() + ".s"))).expect("Unable to create .s file");
     let mut ld_file = File::create(Path::new(&(base_name + ".ld"))).expect("Unable to create .ld file");
 
@@ -114,31 +179,44 @@ pub fn make_asm_files<B: BV>(
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
-    for (reg, value) in pre_post_states.pre_gprs {
+    for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers) {
         writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
     }
-    writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, pre_post_states.pre_nzcv << 28)?;
+    for (reg, value) in get_vector_registers(&pre_post_states.pre_registers) {
+        writeln!(asm_file, "\tldr q{}, =0x{:#x}", reg, value)?;
+    }
+    writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
     writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
     writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
     writeln!(asm_file, "\tbr x{}", entry_reg)?;
     writeln!(asm_file, "finish:")?;
     /* Check the processor flags before they're trashed */
-    if pre_post_states.post_nzcv_mask == 0 {
+    if flags.post_nzcv_mask == 0 {
         writeln!(asm_file, "\t/* No processor flags to check */")?;
     } else {
         writeln!(asm_file, "\t/* Check processor flags */")?;
         writeln!(asm_file, "\tmrs x{}, nzcv", entry_reg)?;
         writeln!(asm_file, "\tubfx x{0}, x{0}, #28, #4", entry_reg)?;
-        writeln!(asm_file, "\tmov x{}, #{:#03x}", exit_reg, pre_post_states.post_nzcv_mask)?;
+        writeln!(asm_file, "\tmov x{}, #{:#03x}", exit_reg, flags.post_nzcv_mask)?;
         writeln!(asm_file, "\tand x{0}, x{0}, x{1}", entry_reg, exit_reg)?;
-        writeln!(asm_file, "\tcmp x{}, #{:#03x}", entry_reg, pre_post_states.post_nzcv_value)?;
+        writeln!(asm_file, "\tcmp x{}, #{:#03x}", entry_reg, flags.post_nzcv_value)?;
         writeln!(asm_file, "\tb.ne comparison_fail")?;
     }
     writeln!(asm_file, "\t/* Check registers */")?;
-    for (reg, value) in pre_post_states.post_gprs {
+    for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers) {
         writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
         writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, reg)?;
+        writeln!(asm_file, "\tb.ne comparison_fail")?;
+    }
+    for (reg, value) in get_vector_registers(&pre_post_states.post_registers) {
+        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+        writeln!(asm_file, "\tmov x{}, v{}.d[0]", exit_reg, reg)?;
+        writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
+        writeln!(asm_file, "\tb.ne comparison_fail")?;
+        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.shiftr(64).lower_u64())?;
+        writeln!(asm_file, "\tmov x{}, v{}.d[1]", exit_reg, reg)?;
+        writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
         writeln!(asm_file, "\tb.ne comparison_fail")?;
     }
     writeln!(asm_file, "\t/* Check memory */")?;

@@ -5,9 +5,11 @@ use isla_lib::executor::LocalFrame;
 use isla_lib::ir::SharedState;
 use isla_lib::smt::{Solver, Sym};
 
+use crate::extract_state::GVAccessor;
+
 pub trait Target {
     /// Registers supported by the test harness
-    fn regs() -> Vec<String>;
+    fn regs() -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         shared_state: &SharedState<'ir, B>,
@@ -17,6 +19,8 @@ pub trait Target {
         regs: HashMap<String, Sym>,
     );
     fn is_gpr(name: &str) -> Option<u32>;
+    fn gpr_prefix() -> &'static str;
+    fn gpr_pad() -> bool;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
 }
@@ -24,9 +28,9 @@ pub trait Target {
 pub struct Aarch64 {}
 
 impl Target for Aarch64 {
-    fn regs() -> Vec<String> {
-        let mut regs: Vec<String> = (0..31).map(|r| format!("R{}", r)).collect();
-        let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| r.to_string()).collect();
+    fn regs() -> Vec<(String, Vec<GVAccessor<String>>)> {
+        let mut regs: Vec<(String, Vec<GVAccessor<String>>)> = (0..31).map(|r| (format!("R{}", r), vec![])).collect();
+        let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
         regs.append(&mut other_regs);
         regs
     }
@@ -46,6 +50,12 @@ impl Target for Aarch64 {
             None
         }
     }
+    fn gpr_prefix() -> &'static str {
+        "zR"
+    }
+    fn gpr_pad() -> bool {
+        false
+    }
     fn run_instruction_function() -> String {
         "Step_CPU".to_string()
     }
@@ -54,9 +64,13 @@ impl Target for Aarch64 {
 pub struct Morello {}
 
 impl Target for Morello {
-    fn regs() -> Vec<String> {
-        let mut regs: Vec<String> = (0..31).map(|r| format!("_R{:02}", r)).collect();
-        let mut other_regs = ["_PC", "SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| r.to_string()).collect();
+    fn regs() -> Vec<(String, Vec<GVAccessor<String>>)> {
+        let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
+            (0..31).map(|r| (format!("_R{:02}", r), vec![])).collect();
+        let mut vector_regs = (0..31).map(|i| ("_V".to_string(), vec![GVAccessor::Element(i)])).collect();
+        let mut other_regs =
+            ["_PC", "SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        regs.append(&mut vector_regs);
         regs.append(&mut other_regs);
         regs
     }
@@ -91,6 +105,12 @@ impl Target for Morello {
         } else {
             None
         }
+    }
+    fn gpr_prefix() -> &'static str {
+        "z_R"
+    }
+    fn gpr_pad() -> bool {
+        true
     }
     fn run_instruction_function() -> String {
         "step_model".to_string()
