@@ -137,7 +137,7 @@ fn regacc_int<B>(
             .iter()
             .map(|acc| match acc {
                 GVAccessor::Field(field_name) => {
-                    GVAccessor::Field(shared_state.symtab.get(field_name).expect("Field missing"))
+                    GVAccessor::Field(shared_state.symtab.get(&zencode::encode(field_name)).expect("Field missing"))
                 }
                 GVAccessor::Element(i) => GVAccessor::Element(*i),
             })

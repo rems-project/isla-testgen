@@ -212,7 +212,8 @@ fn setup_val<B: BV>(
     for acc in accessor {
         match acc {
             GVAccessor::Field(s) => {
-                let name = shared_state.symtab.get(&s).unwrap();
+                let name = shared_state.symtab.get(&zencode::encode(&s))
+                    .unwrap_or_else(|| panic!("No field called {}", s));
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get_mut(&name).unwrap(),
                     _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),

@@ -31,7 +31,9 @@ impl Target for Aarch64 {
     fn regs() -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> = (0..31).map(|r| (format!("R{}", r), vec![])).collect();
         let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        let mut flags = ["N", "Z", "C", "V"].iter().map(|flag| ("PSTATE".to_string(), vec![GVAccessor::Field(flag.to_string())])).collect();
         regs.append(&mut other_regs);
+        regs.append(&mut flags);
         regs
     }
     fn init<'ir, B: BV>(
@@ -70,8 +72,10 @@ impl Target for Morello {
         let mut vector_regs = (0..31).map(|i| ("_V".to_string(), vec![GVAccessor::Element(i)])).collect();
         let mut other_regs =
             ["_PC", "SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        let mut flags = ["N", "Z", "C", "V"].iter().map(|flag| ("PSTATE".to_string(), vec![GVAccessor::Field(flag.to_string())])).collect();
         regs.append(&mut vector_regs);
         regs.append(&mut other_regs);
+        regs.append(&mut flags);
         regs
     }
     fn init<'ir, B: BV>(
