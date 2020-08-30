@@ -33,6 +33,7 @@ use crate::target::Target;
 
 use isla_lib::concrete::BV;
 use isla_lib::config::ISAConfig;
+use isla_lib::zencode;
 
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -129,8 +130,29 @@ fn get_vector_registers<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), Gr
         .collect()
 }
 
-pub fn make_asm_files<B: BV, T: Target>(
+fn get_system_registers<B: BV, T: Target>(
     _target: T,
+    state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>,
+) -> Vec<(String, B)> {
+    T::regs()
+        .iter()
+        .filter_map(|(reg, acc)| {
+            let zreg = zencode::encode(reg);
+            if acc.is_empty() && T::is_gpr(&zreg).is_none() && reg != "_PC" {
+                match state.get(&(&zreg, vec![])) {
+                    Some(GroundVal::Bits(bs)) => Some((reg.clone(), *bs)),
+                    Some(v) => panic!("System register {} was expected to be a bitvector, found {}", reg, v),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn make_asm_files<B: BV, T: Target>(
+    target: T,
     base_name: String,
     pre_post_states: PrePostStates<B>,
     entry_reg: u32,
@@ -182,14 +204,26 @@ pub fn make_asm_files<B: BV, T: Target>(
     for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers) {
         writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
     }
-    for (reg, value) in get_vector_registers(&pre_post_states.pre_registers) {
-        writeln!(asm_file, "\tldr q{}, =0x{:#x}", reg, value)?;
+    let vector_registers = get_vector_registers(&pre_post_states.pre_registers);
+    if !vector_registers.is_empty() {
+        writeln!(asm_file, "\t/* Vector registers */")?;
+        writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
+        writeln!(asm_file, "\tbfc x{}, #10, #1", entry_reg)?;
+        writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
+        for (reg, value) in vector_registers {
+            writeln!(asm_file, "\tldr q{}, =0x{:#x}", reg, value)?;
+        }
     }
     writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
+    for (reg, value) in get_system_registers(target, &pre_post_states.pre_registers) {
+        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+        writeln!(asm_file, "\tmsr {}, x{}", reg, entry_reg)?;
+    }
     writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
     writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
     writeln!(asm_file, "\tbr x{}", entry_reg)?;
+
     writeln!(asm_file, "finish:")?;
     /* Check the processor flags before they're trashed */
     if flags.post_nzcv_mask == 0 {
@@ -258,7 +292,7 @@ pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: String) {
     let assembler_result = isa
         .assembler
         .command()
-        .args(&["-o", &(base_name.clone() + ".o"), &(base_name.clone() + ".s")])
+        .args(&["-march=armv8.2-a", "-o", &(base_name.clone() + ".o"), &(base_name.clone() + ".s")])
         .status()
         .expect("Failed to run assembler");
 
