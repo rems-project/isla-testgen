@@ -135,6 +135,8 @@ fn isla_main() -> i32 {
     opts.optopt("a", "target-arch", "target architecture", "aarch64/morello");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
+    opts.optopt("o", "output", "base name for output files", "<file>");
+    opts.optopt("n", "number-gens", "number of tests to attempt to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
     opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
     opts.optflag("", "events", "dump final events");
@@ -178,6 +180,7 @@ fn testgen_main<T: Target, B: BV>(
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
     let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");
+    let number_gens = matches.opt_get_default("number-gens", 1).expect("Bad number-gens argument");
 
     let exclusions = matches.opt_strs("exclude");
 
@@ -232,6 +235,8 @@ fn testgen_main<T: Target, B: BV>(
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
     let (frame, checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
 
+    let base_name = &matches.opt_str("output").unwrap_or(String::from("test"));
+
     let testconf = TestConf {
         instructions: &instructions,
         max_retries,
@@ -248,12 +253,13 @@ fn testgen_main<T: Target, B: BV>(
         symbolic_code_regions: &symbolic_code_regions,
     };
 
-    generate_test(
-        &target,
-        &testconf,
-        frame,
-        checkpoint,
-    );
+    if number_gens > 1 {
+        for i in 0..number_gens {
+            generate_test(&target, &testconf, frame.clone(), checkpoint.clone(), &format!("{}{}", base_name, i + 1));
+        }
+    } else if number_gens == 1 {
+        generate_test(&target, &testconf, frame, checkpoint, base_name);
+    }
 
     0
 }
@@ -279,6 +285,7 @@ fn generate_test<'ir, B: BV, T: Target>(
     conf: &TestConf<'ir, B>,
     mut frame: Frame<'ir, B>,
     mut checkpoint: Checkpoint<B>,
+    basename: &str,
 ) {
     let run_instruction_function = T::run_instruction_function();
 
@@ -354,7 +361,7 @@ fn generate_test<'ir, B: BV, T: Target>(
         conf.symbolic_code_regions,
     )
     .expect("Error extracting state");
-    generate_object::make_asm_files(target, String::from("test"), initial_state, entry_reg, exit_reg)
+    generate_object::make_asm_files(target, basename, initial_state, entry_reg, exit_reg)
         .expect("Error generating object file");
-    generate_object::build_elf_file(conf.isa_config, String::from("test"));
+    generate_object::build_elf_file(conf.isa_config, basename);
 }

@@ -41,7 +41,6 @@ use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
 
 #[derive(Debug)]
 pub enum HarnessError {
@@ -153,14 +152,14 @@ fn get_system_registers<B: BV, T: Target>(
 
 pub fn make_asm_files<B: BV, T: Target>(
     target: &T,
-    base_name: String,
+    base_name: &str,
     pre_post_states: PrePostStates<B>,
     entry_reg: u32,
     exit_reg: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let flags = get_flags(&pre_post_states);
-    let mut asm_file = File::create(Path::new(&(base_name.clone() + ".s"))).expect("Unable to create .s file");
-    let mut ld_file = File::create(Path::new(&(base_name + ".ld"))).expect("Unable to create .ld file");
+    let mut asm_file = File::create(&format!("{}.s", base_name)).expect("Unable to create .s file");
+    let mut ld_file = File::create(&format!("{}.ld", base_name)).expect("Unable to create .ld file");
 
     writeln!(ld_file, "SECTIONS {{")?;
 
@@ -288,11 +287,11 @@ pub fn make_asm_files<B: BV, T: Target>(
     Ok(())
 }
 
-pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: String) {
+pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: &str) {
     let assembler_result = isa
         .assembler
         .command()
-        .args(&["-march=armv8.2-a", "-o", &(base_name.clone() + ".o"), &(base_name.clone() + ".s")])
+        .args(&["-march=armv8.2-a", "-o", &format!("{}.o", base_name), &format!("{}.s", base_name)])
         .status()
         .expect("Failed to run assembler");
 
@@ -303,7 +302,14 @@ pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: String) {
     let linker_result = isa
         .linker
         .command()
-        .args(&["-o", &(base_name.clone() + ".elf"), "-T", &(base_name.clone() + ".ld"), "-n", &(base_name + ".o")])
+        .args(&[
+            "-o",
+            &format!("{}.elf", base_name),
+            "-T",
+            &format!("{}.ld", base_name),
+            "-n",
+            &format!("{}.o", base_name),
+        ])
         .status()
         .expect("Failed to run linker");
 
