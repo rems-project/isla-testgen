@@ -92,7 +92,6 @@ fn parse_instruction_masks(little_endian: bool, args: &[String]) -> Vec<(&str, O
 }
 
 fn instruction_opcode<B: BV>(
-    hex: bool,
     little_endian: bool,
     encodings: &asl_tag_files::Encodings,
     isa_config: &ISAConfig<B>,
@@ -102,9 +101,9 @@ fn instruction_opcode<B: BV>(
         let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64);
         println!("Instruction {:#010x}: {}", opcode, description);
         (opcode.to_le_bytes(), true)
-    } else if hex {
+    } else if instruction.starts_with("0x") {
         println!("Instruction {}", instruction);
-        match u32::from_str_radix(&instruction, 16) {
+        match u32::from_str_radix(&instruction[2..], 16) {
             Ok(opcode) => (opcode.to_le_bytes(), false),
             Err(e) => {
                 eprintln!("Could not parse instruction: {}", e);
@@ -133,7 +132,6 @@ fn isla_main() -> i32 {
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
     opts.optopt("a", "target-arch", "target architecture", "aarch64/morello");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
-    opts.optflag("x", "hex", "parse instruction as hexadecimal opcode, rather than assembly");
     opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
     opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
@@ -243,7 +241,7 @@ fn testgen_main<T: Target, B: BV>(
         let mut random_attempts_left = max_retries;
         loop {
             let (opcode, repeat) =
-                instruction_opcode(matches.opt_present("hex"), little_endian, &encodings, &isa_config, instruction);
+                instruction_opcode(little_endian, &encodings, &isa_config, instruction);
             let mask_str = match opcode_mask {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
