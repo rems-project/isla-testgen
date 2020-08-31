@@ -131,7 +131,7 @@ fn get_vector_registers<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), Gr
 }
 
 fn get_system_registers<B: BV, T: Target>(
-    _target: T,
+    _target: &T,
     state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>,
 ) -> Vec<(String, B)> {
     T::regs()
@@ -152,7 +152,7 @@ fn get_system_registers<B: BV, T: Target>(
 }
 
 pub fn make_asm_files<B: BV, T: Target>(
-    target: T,
+    target: &T,
     base_name: String,
     pre_post_states: PrePostStates<B>,
     entry_reg: u32,

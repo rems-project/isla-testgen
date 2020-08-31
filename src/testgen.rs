@@ -34,14 +34,16 @@ use isla_lib::init::{initialize_architecture, Initialized};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::process::exit;
 
 // TODO: allow B64 or B129
 use isla_lib::concrete::{bitvector129::B129, BV};
+use isla_lib::executor::Frame;
 use isla_lib::ir::*;
-use isla_lib::memory::Memory;
+use isla_lib::memory::{Address, Memory};
 use isla_lib::simplify::write_events;
-use isla_lib::smt::Event;
+use isla_lib::smt::{Checkpoint, Event};
 use isla_lib::zencode;
 
 use isla_testgen::asl_tag_files;
@@ -228,36 +230,82 @@ fn testgen_main<T: Target, B: BV>(
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
-    let (mut frame, mut checkpoint) =
-        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
+    let (frame, checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
 
+    let testconf = TestConf {
+        instructions: &instructions,
+        max_retries,
+        shared_state: &shared_state,
+        num_threads,
+        dump_events,
+        dump_all_events,
+        little_endian,
+        isa_config: &isa_config,
+        encodings: &encodings,
+        stop_functions: &stop_functions,
+        register_types: &register_types,
+        symbolic_regions: &symbolic_regions,
+        symbolic_code_regions: &symbolic_code_regions,
+    };
+
+    generate_test(
+        &target,
+        &testconf,
+        frame,
+        checkpoint,
+    );
+
+    0
+}
+
+struct TestConf<'ir, B> {
+    instructions: &'ir [(&'ir str, Option<u32>)],
+    max_retries: i32,
+    shared_state: &'ir SharedState<'ir, B>,
+    num_threads: usize,
+    dump_events: bool,
+    dump_all_events: bool,
+    little_endian: bool,
+    isa_config: &'ir ISAConfig<B>,
+    encodings: &'ir asl_tag_files::Encodings,
+    stop_functions: &'ir HashSet<Name>,
+    register_types: &'ir HashMap<Name, Ty<Name>>,
+    symbolic_regions: &'ir [Range<Address>],
+    symbolic_code_regions: &'ir [Range<Address>],
+}
+
+fn generate_test<'ir, B: BV, T: Target>(
+    target: &T,
+    conf: &TestConf<'ir, B>,
+    mut frame: Frame<'ir, B>,
+    mut checkpoint: Checkpoint<B>,
+) {
     let run_instruction_function = T::run_instruction_function();
 
     let mut opcode_vars = vec![];
 
     let mut opcode_index = 0;
     let mut rng = rand::thread_rng();
-    for (instruction, opcode_mask) in instructions {
-        let mut random_attempts_left = max_retries;
+    for (instruction, opcode_mask) in conf.instructions {
+        let mut random_attempts_left = conf.max_retries;
         loop {
-            let (opcode, repeat) =
-                instruction_opcode(little_endian, &encodings, &isa_config, instruction);
+            let (opcode, repeat) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction);
             let mask_str = match opcode_mask {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
             eprintln!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
-                setup_opcode(&shared_state, &frame, opcode, opcode_mask, checkpoint.clone());
+                setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
                 &run_instruction_function,
-                num_threads,
-                &shared_state,
+                conf.num_threads,
+                conf.shared_state,
                 &frame,
                 op_checkpoint,
                 opcode_var,
-                &stop_functions,
-                dump_all_events,
+                conf.stop_functions,
+                conf.dump_all_events,
             );
             let num_continuations = continuations.len();
             if num_continuations > 0 {
@@ -284,31 +332,29 @@ fn testgen_main<T: Target, B: BV>(
         }
     }
 
-    let (entry_reg, exit_reg, checkpoint) = finalize(&target, &shared_state, &frame, checkpoint);
+    let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
 
     eprintln!("Complete");
 
-    if dump_events {
+    if conf.dump_events {
         let trace = checkpoint.trace().as_ref().expect("No trace!");
         let mut events = trace.to_vec();
         let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-        write_events(&mut std::io::stdout(), &events, &shared_state.symtab);
+        write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
     }
 
     println!("Initial state extracted from events:");
     let initial_state = extract_state::interrogate_model(
-        &target,
-        &isa_config,
+        target,
+        conf.isa_config,
         checkpoint,
-        &shared_state,
-        &register_types,
-        &symbolic_regions,
-        &symbolic_code_regions,
+        conf.shared_state,
+        conf.register_types,
+        conf.symbolic_regions,
+        conf.symbolic_code_regions,
     )
     .expect("Error extracting state");
     generate_object::make_asm_files(target, String::from("test"), initial_state, entry_reg, exit_reg)
         .expect("Error generating object file");
-    generate_object::build_elf_file(&isa_config, String::from("test"));
-
-    0
+    generate_object::build_elf_file(conf.isa_config, String::from("test"));
 }
