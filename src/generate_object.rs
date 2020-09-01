@@ -217,7 +217,11 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
     for (reg, value) in get_system_registers(target, &pre_post_states.pre_registers) {
         writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
-        writeln!(asm_file, "\tmsr {}, x{}", reg, entry_reg)?;
+        if reg == "SP_EL3" {
+            writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
+        } else {
+            writeln!(asm_file, "\tmsr {}, x{}", reg, entry_reg)?;
+        }
     }
     writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
     writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
