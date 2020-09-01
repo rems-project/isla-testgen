@@ -34,6 +34,7 @@ use isla_lib::init::{initialize_architecture, Initialized};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
 use std::ops::Range;
 use std::process::exit;
 
@@ -255,10 +256,10 @@ fn testgen_main<T: Target, B: BV>(
 
     if number_gens > 1 {
         for i in 0..number_gens {
-            generate_test(&target, &testconf, frame.clone(), checkpoint.clone(), &format!("{}{}", base_name, i + 1));
+            generate_test(&target, &testconf, frame.clone(), checkpoint.clone(), &format!("{}{}", base_name, i + 1)).unwrap_or_else(|err| println!("Generation attempt {} failed: {}", i+1, err));
         }
     } else if number_gens == 1 {
-        generate_test(&target, &testconf, frame, checkpoint, base_name);
+        generate_test(&target, &testconf, frame, checkpoint, base_name).unwrap_or_else(|err| println!("Generation attempt failed: {}", err));
     }
 
     0
@@ -280,13 +281,23 @@ struct TestConf<'ir, B> {
     symbolic_code_regions: &'ir [Range<Address>],
 }
 
+#[derive(Debug)]
+struct GenerationError(String);
+
+impl std::fmt::Display for GenerationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl Error for GenerationError {}
+
 fn generate_test<'ir, B: BV, T: Target>(
     target: &T,
     conf: &TestConf<'ir, B>,
     mut frame: Frame<'ir, B>,
     mut checkpoint: Checkpoint<B>,
     basename: &str,
-) {
+) -> Result<(), Box<dyn std::error::Error>> {
     let run_instruction_function = T::run_instruction_function();
 
     let mut opcode_vars = vec![];
@@ -328,12 +339,10 @@ fn generate_test<'ir, B: BV, T: Target>(
                 if repeat {
                     random_attempts_left -= 1;
                     if random_attempts_left == 0 {
-                        eprintln!("Retried too many times");
-                        exit(1);
+                        return Err(Box::new(GenerationError("Retried too many times".to_string())));
                     }
                 } else {
-                    eprintln!("Unable to continue");
-                    exit(1);
+                    return Err(Box::new(GenerationError("Unable to continue".to_string())));
                 }
             }
         }
@@ -344,7 +353,7 @@ fn generate_test<'ir, B: BV, T: Target>(
     eprintln!("Complete");
 
     if conf.dump_events {
-        let trace = checkpoint.trace().as_ref().expect("No trace!");
+        let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
         let mut events = trace.to_vec();
         let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
         write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
@@ -359,9 +368,9 @@ fn generate_test<'ir, B: BV, T: Target>(
         conf.register_types,
         conf.symbolic_regions,
         conf.symbolic_code_regions,
-    )
-    .expect("Error extracting state");
-    generate_object::make_asm_files(target, basename, initial_state, entry_reg, exit_reg)
-        .expect("Error generating object file");
-    generate_object::build_elf_file(conf.isa_config, basename);
+    )?;
+    generate_object::make_asm_files(target, basename, initial_state, entry_reg, exit_reg)?;
+    generate_object::build_elf_file(conf.isa_config, basename)?;
+
+    Ok(())
 }

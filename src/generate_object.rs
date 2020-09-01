@@ -158,8 +158,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     exit_reg: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let flags = get_flags(&pre_post_states);
-    let mut asm_file = File::create(&format!("{}.s", base_name)).expect("Unable to create .s file");
-    let mut ld_file = File::create(&format!("{}.ld", base_name)).expect("Unable to create .ld file");
+    let mut asm_file = File::create(&format!("{}.s", base_name))?;
+    let mut ld_file = File::create(&format!("{}.ld", base_name))?;
 
     writeln!(ld_file, "SECTIONS {{")?;
 
@@ -287,16 +287,26 @@ pub fn make_asm_files<B: BV, T: Target>(
     Ok(())
 }
 
-pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: &str) {
+#[derive(Debug)]
+pub struct BuildError(String);
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl Error for BuildError {}
+
+pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
     let assembler_result = isa
         .assembler
         .command()
         .args(&["-march=armv8.2-a", "-o", &format!("{}.o", base_name), &format!("{}.s", base_name)])
         .status()
-        .expect("Failed to run assembler");
+        .map_err(|err| BuildError(format!("Failed to run assembler: {}", err)))?;
 
     if !assembler_result.success() {
-        panic!("Assembler returned bad result code: {}", assembler_result);
+        return Err(BuildError(format!("Assembler returned bad result code: {}", assembler_result)));
     }
 
     let linker_result = isa
@@ -311,9 +321,11 @@ pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: &str) {
             &format!("{}.o", base_name),
         ])
         .status()
-        .expect("Failed to run linker");
+        .map_err(|err| BuildError(format!("Failed to run linker: {}", err)))?;
 
     if !linker_result.success() {
-        panic!("Linker returned bad result code: {}", linker_result);
+        return Err(BuildError(format!("Linker returned bad result code: {}", linker_result)));
     }
+
+    Ok(())
 }
