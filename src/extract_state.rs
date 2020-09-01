@@ -297,7 +297,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
             Some(gval) => {
                 current_registers.insert((*reg, vec![]), (false, Some(gval)));
             }
-            None => eprintln!(
+            None => println!(
                 "Warning: don't know how to deal with default value {:?} for register {}",
                 val,
                 shared_state.symtab.to_str(*reg)
@@ -348,7 +348,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                         }
                     }
                     Some(GroundVal::Bool(_)) => panic!("Memory read returned a boolean?!"),
-                    None => eprintln!("Ambivalent read of {} bytes from {:x}", bytes, address),
+                    None => println!("Ambivalent read of {} bytes from {:x}", bytes, address),
                 }
             }
             Event::WriteMem { value: _, write_kind: _, address, data, bytes } => {
@@ -367,7 +367,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     }
                     Some(GroundVal::Bool(_)) => panic!("Memory write value was a boolean?!"),
                     None => {
-                        eprintln!("Ambivalent write of {} bytes to {:x}", bytes, address);
+                        println!("Ambivalent write of {} bytes to {:x}", bytes, address);
                         for i in 0..*bytes {
                             current_memory.insert(address.try_into()? + i as u64, None);
                         }
@@ -390,7 +390,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                             Some(val) => {
                                                 initial_registers.insert(key, val);
                                             }
-                                            None => eprintln!(
+                                            None => println!(
                                                 "Ambivalent read of register {}",
                                                 regacc_to_str(shared_state, &key)
                                             ),
@@ -398,7 +398,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                     }
                                 }
                                 _ => {
-                                    eprintln!(
+                                    println!(
                                         "Skipping read of {} with value {:?} due to unsupported type {:?}",
                                         regacc_to_str(shared_state, &key),
                                         value,

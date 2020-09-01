@@ -344,7 +344,7 @@ pub fn init_model<'ir, B: BV>(
     regs: Bindings<'ir, B>,
     memory: &Memory<B>,
 ) -> (Frame<'ir, B>, Checkpoint<B>) {
-    eprintln!("Initialising model...");
+    println!("Initialising model...");
 
     let init_fn = shared_state.symtab.lookup("zinit");
     let (init_args, _, init_instrs) = shared_state.functions.get(&init_fn).unwrap();
@@ -371,7 +371,7 @@ pub fn init_model<'ir, B: BV>(
         exit(1);
     }
     let (frame, post_init_checkpoint) = init_result.pop().expect("pop failed");
-    eprintln!("...done");
+    println!("...done");
 
     (frame, post_init_checkpoint)
 }
@@ -494,7 +494,7 @@ pub fn run_model_instruction<'ir, B: BV>(
         },
     );
 
-    eprintln!("Execution took: {}ms", now.elapsed().as_millis());
+    println!("Execution took: {}ms", now.elapsed().as_millis());
 
     let mut result = vec![];
 

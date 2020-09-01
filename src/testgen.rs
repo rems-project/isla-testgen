@@ -255,11 +255,24 @@ fn testgen_main<T: Target, B: BV>(
     };
 
     if number_gens > 1 {
+        let mut successes = 0;
         for i in 0..number_gens {
-            generate_test(&target, &testconf, frame.clone(), checkpoint.clone(), &format!("{}{}", base_name, i + 1)).unwrap_or_else(|err| println!("Generation attempt {} failed: {}", i+1, err));
+            println!("---------- Generation attempt {}", i + 1);
+            match generate_test(
+                &target,
+                &testconf,
+                frame.clone(),
+                checkpoint.clone(),
+                &format!("{}{}", base_name, i + 1),
+            ) {
+                Ok(()) => successes += 1,
+                Err(err) => println!("Generation attempt {} failed: {}", i + 1, err),
+            }
         }
+        println!("---------- Complete, {} tests generated in {} attempts", successes, number_gens);
     } else if number_gens == 1 {
-        generate_test(&target, &testconf, frame, checkpoint, base_name).unwrap_or_else(|err| println!("Generation attempt failed: {}", err));
+        generate_test(&target, &testconf, frame, checkpoint, base_name)
+            .unwrap_or_else(|err| println!("Generation attempt failed: {}", err));
     }
 
     0
@@ -312,7 +325,7 @@ fn generate_test<'ir, B: BV, T: Target>(
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
-            eprintln!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+            println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
                 setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
@@ -328,14 +341,14 @@ fn generate_test<'ir, B: BV, T: Target>(
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
-                eprintln!("{} successful execution(s)", num_continuations);
+                println!("{} successful execution(s)", num_continuations);
                 opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
                 opcode_index += 1;
                 frame = f;
                 checkpoint = c;
                 break;
             } else {
-                eprintln!("No successful executions");
+                println!("No successful executions");
                 if repeat {
                     random_attempts_left -= 1;
                     if random_attempts_left == 0 {
@@ -350,7 +363,7 @@ fn generate_test<'ir, B: BV, T: Target>(
 
     let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
 
-    eprintln!("Complete");
+    println!("Complete");
 
     if conf.dump_events {
         let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
