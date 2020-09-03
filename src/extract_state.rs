@@ -44,7 +44,7 @@ use isla_lib::memory;
 use isla_lib::primop::smt_value;
 use isla_lib::smt;
 use isla_lib::smt::smtlib::Exp;
-use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver, Sym};
+use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver};
 use isla_lib::zencode;
 
 // TODO: get smt.rs to return a BV
@@ -245,8 +245,12 @@ fn iter_struct_types<F, T, B: BV>(
     }
 }
 
-/// Extract pre- and post-states from the event trace and the model.  Writes
-/// that happen during initialisation are not included in the pre-state.
+/// Extract pre- and post-states from the event trace and the model.
+/// The first read after initialisation is recorded for the pre-state:
+/// if it was concrete during the symbolic execution then it was
+/// initialised separately and the harness doesn't need to do it;
+/// however if it's not supported by the harness then we warn about
+/// it.
 pub fn interrogate_model<'ir, B: BV, T: Target>(
     _target: &T,
     isa_config: &ISAConfig<B>,
@@ -278,15 +282,15 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let mut events = solver.trace().to_vec();
     let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
 
+    let harness_registers : HashSet<(Name, Vec<GVAccessor<Name>>)> =
+        T::regs().iter().map(|ra| regacc_int(shared_state,ra)).collect();
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
     let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), (bool, Option<GroundVal<B>>)> = HashMap::new();
-    let mut symbolic_init_registers: HashMap<(Name, Vec<GVAccessor<Name>>), Sym> = HashMap::new();
     let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor<Name>>)> = HashSet::new();
 
     // Assume the harness doesn't need to do these
-    // TODO: something more subtle, maybe configuration registers don't need set, but others do
     for (reg, val) in &isa_config.default_registers {
         let gval = match val {
             Val::Bool(b) => Some(GroundVal::Bool(*b)),
@@ -322,8 +326,8 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     // any current value, especially as we want to find out if we need
                     // to set them in the actual test and so should not ignore the next
                     // write.
-                    for regacc in T::regs() {
-                        current_registers.remove(&regacc_int(shared_state, &regacc));
+                    for regacc in &harness_registers {
+                        current_registers.remove(regacc);
                     }
                 }
                 let address = match get_model_val(&mut model, address)? {
@@ -384,16 +388,19 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                         if init_complete {
                             match ty {
                                 Ty::Bits(_) | Ty::Bool => {
-                                    let val = get_model_val(&mut model, value).expect("get_model_val");
-                                    if current_registers.insert(key.clone(), (true, val)).is_none() {
-                                        match val {
-                                            Some(val) => {
+                                    let model_value = get_model_val(&mut model, value).expect("get_model_val");
+                                    if current_registers.insert(key.clone(), (true, model_value)).is_none() {
+                                        match (value, model_value) {
+                                            (Val::Symbolic(_), Some(val)) => {
                                                 initial_registers.insert(key, val);
                                             }
-                                            None => println!(
+                                            (Val::Symbolic(_), None) => println!(
                                                 "Ambivalent read of register {}",
                                                 regacc_to_str(shared_state, &key)
                                             ),
+                                            // Otherwise we read a concrete initial value, so it comes from
+                                            // initialisation and does not need to be set by the harness
+                                            (_, _) => (),
                                         }
                                     }
                                 }
@@ -406,18 +413,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                     );
                                     skipped.insert(key);
                                 }
-                            }
-                        } else {
-                            // If we see a symbolic read during initialisation before a write,
-                            // remember it in case it gets written back - it may be a field that
-                            // hasn't been changed.
-                            match value {
-                                Val::Symbolic(var) => {
-                                    if !current_registers.contains_key(&key) {
-                                        symbolic_init_registers.insert(key, *var);
-                                    }
-                                }
-                                _ => (),
                             }
                         }
                     };
@@ -440,22 +435,12 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                 let mut process_write =
                     |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, _: &mut ()| {
                         let key = (*reg, accessors.clone());
-                        let record = init_complete
-                            || match value {
-                                Val::Symbolic(new_var) => match symbolic_init_registers.get(&key) {
-                                    Some(old_var) => old_var != new_var,
-                                    _ => true,
-                                },
-                                _ => true,
-                            };
-                        if record {
-                            match ty {
-                                Ty::Bits(_) | Ty::Bool => {
-                                    let val = get_model_val(&mut model, value).expect("get_model_val");
-                                    current_registers.insert(key, (init_complete, val));
-                                }
-                                _ => (),
+                        match ty {
+                            Ty::Bits(_) | Ty::Bool => {
+                                let val = get_model_val(&mut model, value).expect("get_model_val");
+                                current_registers.insert(key, (init_complete, val));
                             }
+                            _ => (),
                         }
                     };
                 match register_types.get(reg) {
@@ -487,6 +472,11 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         print!("{:08x}:{:02x} ", address, value);
     }
     println!();
+    for (regacc, _value) in &initial_registers {
+        if !harness_registers.contains(regacc) {
+            println!("Warning: depends on unsupported register {}", regacc_to_str(shared_state, regacc));
+        }
+    }
     print!("Initial registers: ");
     for (regacc, value) in &initial_registers {
         print!("{}:{} ", regacc_to_str(shared_state, regacc), value);
