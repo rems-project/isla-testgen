@@ -142,9 +142,12 @@ fn isla_main() -> i32 {
     opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
     opts.optflag("", "events", "dump final events");
     opts.optflag("", "all-events", "dump events for every behaviour");
+    opts.optopt("", "z3-timeout", "Soft timeout for Z3 solver (60s default)", "<milliseconds>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
+
+    isla_lib::smt::global_set_param_value("timeout", matches.opt_str("z3-timeout").as_deref().unwrap_or("60000"));
 
     match matches.opt_str("target-arch").as_deref().unwrap_or("aarch64") {
         "aarch64" => testgen_main(target::Aarch64 {}, hasher, opts, matches, arch),
