@@ -256,7 +256,7 @@ fn iter_struct_types<F, T, B: BV>(
 /// it.
 pub fn interrogate_model<'ir, B: BV, T: Target>(
     _target: &T,
-    isa_config: &ISAConfig<B>,
+    _isa_config: &ISAConfig<B>,
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<'ir, B>,
     register_types: &HashMap<Name, Ty<Name>>,
@@ -285,8 +285,8 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let mut events = solver.trace().to_vec();
     let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
 
-    let harness_registers : HashSet<(Name, Vec<GVAccessor<Name>>)> =
-        T::regs().iter().map(|ra| regacc_int(shared_state,ra)).collect();
+    let harness_registers: HashSet<(Name, Vec<GVAccessor<Name>>)> =
+        T::regs().iter().map(|ra| regacc_int(shared_state, ra)).collect();
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
