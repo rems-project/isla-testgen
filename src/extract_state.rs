@@ -58,6 +58,9 @@ fn bits_to_bv<B: BV>(bits: &[bool]) -> B {
     bv
 }
 
+// For now I128 values are repesented as bitvectors, because that's
+// how they come out of Z3 and we don't really need to convert them to
+// anything yet.
 #[derive(Clone, Copy, Debug)]
 pub enum GroundVal<B> {
     Bool(bool),
@@ -287,27 +290,11 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
+    // The boolean in current_registers indicates that a register is
+    // set by the harness or the test sequence, and so should be
+    // reported to the user.
     let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), (bool, Option<GroundVal<B>>)> = HashMap::new();
     let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor<Name>>)> = HashSet::new();
-
-    // Assume the harness doesn't need to do these
-    for (reg, val) in &isa_config.default_registers {
-        let gval = match val {
-            Val::Bool(b) => Some(GroundVal::Bool(*b)),
-            Val::Bits(bs) => Some(GroundVal::Bits(*bs)),
-            _ => None,
-        };
-        match gval {
-            Some(gval) => {
-                current_registers.insert((*reg, vec![]), (false, Some(gval)));
-            }
-            None => println!(
-                "Warning: don't know how to deal with default value {:?} for register {}",
-                val,
-                shared_state.symtab.to_str(*reg)
-            ),
-        }
-    }
 
     let mut init_complete = false;
 
@@ -387,20 +374,26 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                         };
                         if init_complete {
                             match ty {
-                                Ty::Bits(_) | Ty::Bool => {
+                                Ty::Bits(_) | Ty::Bool | Ty::I128 => {
                                     let model_value = get_model_val(&mut model, value).expect("get_model_val");
-                                    if current_registers.insert(key.clone(), (true, model_value)).is_none() {
-                                        match (value, model_value) {
-                                            (Val::Symbolic(_), Some(val)) => {
-                                                initial_registers.insert(key, val);
+                                    match value {
+                                        Val::Symbolic(_) => {
+                                            if current_registers.insert(key.clone(), (true, model_value)).is_none() {
+                                                match model_value {
+                                                    Some(val) => {
+                                                        initial_registers.insert(key, val);
+                                                    }
+                                                    None => println!(
+                                                        "Ambivalent read of register {}",
+                                                        regacc_to_str(shared_state, &key)
+                                                    ),
+                                                }
                                             }
-                                            (Val::Symbolic(_), None) => println!(
-                                                "Ambivalent read of register {}",
-                                                regacc_to_str(shared_state, &key)
-                                            ),
-                                            // Otherwise we read a concrete initial value, so it comes from
-                                            // initialisation and does not need to be set by the harness
-                                            (_, _) => (),
+                                        }
+                                        // Otherwise we read a concrete initial value, so it comes from
+                                        // initialisation and does not need to be set by the harness
+                                        _ => {
+                                            current_registers.insert(key.clone(), (false, model_value));
                                         }
                                     }
                                 }
