@@ -106,6 +106,11 @@ ignore = [
 "__syncAbortOnWriteNormCache" = false
 "__syncAbortOnDeviceWrite" = false
 
+# Set this to an address which we can't right to in the current tests
+# to avoid a branch to decide whether to clear it in stores.  May need
+# proper handling if we support exclusives in future.
+"__exclusive_block_address" = "0x123456789abc"
+
 # A map from register names that may appear in litmus files to Sail
 # register names
 [registers.renames]
