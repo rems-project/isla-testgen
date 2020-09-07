@@ -431,7 +431,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                         match ty {
                             Ty::Bits(_) | Ty::Bool => {
                                 let val = get_model_val(&mut model, value).expect("get_model_val");
-                                current_registers.insert(key, (init_complete, val));
+                                if init_complete {
+                                    current_registers.insert(key, (true, val));
+                                }
                             }
                             _ => (),
                         }
