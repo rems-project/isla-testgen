@@ -299,9 +299,9 @@ pub fn read_tag_file(file_name: &str, exclusions: &[String]) -> Encodings {
     while let Some(line) = lines.next() {
         if line.starts_with("TAG:") {
             let components: Vec<&str> = line.split(':').collect();
-            if (components.len() == 3) & (components[2] == "diagram") & !(exclude.is_match(components[1])) {
+            if (components.len() == 3) && (components[2] == "diagram") && !(exclude.is_match(components[1])) {
                 read_diagram(components[1], &mut lines, &mut encodings).unwrap();
-            } else if (components.len() == 4) & (components[3] == "diagram") {
+            } else if (components.len() == 4) && (components[3] == "diagram") {
                 let name = components[1].to_owned() + ":" + components[2];
                 if !(exclude.is_match(&name)) {
                     read_diagram(&name, &mut lines, &mut encodings).unwrap();

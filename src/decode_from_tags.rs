@@ -4,9 +4,20 @@ use std::env;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut opts = getopts::Options::new();
+    opts.optflag("h", "help", "print this help message");
     opts.optmulti("t", "tag-file", "Tag file for encodings", "FILE");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
-    let matches = opts.parse(&args[1..]).expect("Bad arguments");
+    let matches = opts.parse(&args[1..]).unwrap_or_else(
+        |err| {
+            eprintln!("{}", err);
+            std::process::exit(1);
+        });
+
+    if matches.opt_present("help") {
+        print!("{}", opts.usage("Usage: zencode [options] <string> ..."));
+        std::process::exit(0);
+    }
+
     let filename = matches.opt_str("t").expect("No tag file given");
     let exclusions = matches.opt_strs("exclude");
     let encodings = asl_tag_files::read_tag_file(&filename, &exclusions);
