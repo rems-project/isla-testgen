@@ -84,13 +84,22 @@ pub enum GVAccessor<N> {
 }
 
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
-    let exp = smt_value(val)?;
-    match model.get_exp(&exp)? {
-        Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
-        Some(Exp::Bits(bits)) => Ok(Some(GroundVal::Bits(bits_to_bv(&bits)))),
-        Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
-        None => Ok(None),
-        Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),
+    match val {
+        Val::Symbolic(var) => {
+            match model.get_var(*var)? {
+                Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
+                Some(Exp::Bits(bits)) => Ok(Some(GroundVal::Bits(bits_to_bv(&bits)))),
+                Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
+                None => Ok(None),
+                Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),
+            }
+        }
+        Val::Bool(b) => Ok(Some(GroundVal::Bool(*b))),
+        Val::Bits(bs) => Ok(Some(GroundVal::Bits(*bs))),
+        // See comment about I128 above, and note that if we wanted full I128 support we'd need to
+        // add a case for symbolic values, above
+        Val::I128(i) => Ok(Some(GroundVal::Bits(B::zeros(128).add_i128(*i)))),
+        _ => Err(ExecError::Type("Bad value in get_model_val")),
     }
 }
 
@@ -180,12 +189,12 @@ where
     m
 }
 
-fn apply_accessors<B: BV>(
-    shared_state: &ir::SharedState<B>,
-    start_ty: &Ty<Name>,
+fn apply_accessors<'a, B: BV>(
+    shared_state: &'a ir::SharedState<B>,
+    start_ty: &'a Ty<Name>,
     accessors: &Vec<Accessor>,
-    start_value: &Val<B>,
-) -> (Ty<Name>, Val<B>) {
+    start_value: &'a Val<B>,
+) -> (&'a Ty<Name>, &'a Val<B>) {
     let mut ty = start_ty;
     let mut value = start_value;
     for Accessor::Field(field) in accessors {
@@ -200,7 +209,7 @@ fn apply_accessors<B: BV>(
             _ => panic!("Bad type for struct {:?}", ty),
         }
     }
-    (ty.clone(), value.clone())
+    (ty, value)
 }
 
 fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor<Name>> {
