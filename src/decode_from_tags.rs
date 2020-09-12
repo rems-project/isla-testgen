@@ -7,11 +7,10 @@ fn main() {
     opts.optflag("h", "help", "print this help message");
     opts.optmulti("t", "tag-file", "Tag file for encodings", "FILE");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
-    let matches = opts.parse(&args[1..]).unwrap_or_else(
-        |err| {
-            eprintln!("{}", err);
-            std::process::exit(1);
-        });
+    let matches = opts.parse(&args[1..]).unwrap_or_else(|err| {
+        eprintln!("{}", err);
+        std::process::exit(1);
+    });
 
     if matches.opt_present("help") {
         print!("{}", opts.usage("Usage: zencode [options] <string> ..."));

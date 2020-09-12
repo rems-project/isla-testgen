@@ -115,7 +115,9 @@ impl Target for Morello {
             }
             if reg == "CPTR_EL3" {
                 let mut mask = 0x3feff8ff;
-                if self.aarch64_compatible { mask |= 0x00000200 };
+                if self.aarch64_compatible {
+                    mask |= 0x00000200
+                };
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0x00000000, 32)),

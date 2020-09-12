@@ -84,15 +84,13 @@ pub enum GVAccessor<N> {
 
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
     match val {
-        Val::Symbolic(var) => {
-            match model.get_var(*var)? {
-                Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
-                Some(Exp::Bits(bits)) => Ok(Some(GroundVal::Bits(bits_to_bv(&bits)))),
-                Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
-                None => Ok(None),
-                Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),
-            }
-        }
+        Val::Symbolic(var) => match model.get_var(*var)? {
+            Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
+            Some(Exp::Bits(bits)) => Ok(Some(GroundVal::Bits(bits_to_bv(&bits)))),
+            Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
+            None => Ok(None),
+            Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),
+        },
         Val::Bool(b) => Ok(Some(GroundVal::Bool(*b))),
         Val::Bits(bs) => Ok(Some(GroundVal::Bits(*bs))),
         // See comment about I128 above, and note that if we wanted full I128 support we'd need to
