@@ -66,10 +66,12 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp 
     mem_exp
 }
 
+// TODO: tagless tests for plain aarch64
 #[derive(Debug, Clone)]
 struct SeqMemory {
     read_ifetch: EnumMember,
     memory_var: Sym,
+    tag_memory_var: Sym,
 }
 
 impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
@@ -81,6 +83,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         read_kind: &Val<B>,
         address: &Val<B>,
         bytes: u32,
+        tag: &Option<Val<B>>,
     ) {
         use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
@@ -91,6 +94,17 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             Box::new(read_exp),
             Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
         )));
+        match tag {
+            Some(tag_value) => {
+                let tag_exp = smt_value(tag_value)
+                    .unwrap_or_else(|err| panic!("Bad memory tag read value {:?}: {}", tag_value, err));
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(tag_exp),
+                    Box::new(Exp::Select(Box::new(Exp::Var(self.tag_memory_var)), Box::new(addr_exp.clone()))),
+                )));
+            }
+            None => (),
+        }
         let kind = match read_kind {
             Val::Enum(e) => {
                 if *e == self.read_ifetch {
@@ -114,12 +128,14 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         address: &Val<B>,
         data: &Val<B>,
         bytes: u32,
+        tag: &Option<Val<B>>,
     ) {
         use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
 
-        let data_exp = smt_value(data).unwrap_or_else(|err| panic!("Bad memory read value {:?}: {}", data, err));
-        let addr_exp = smt_value(address).unwrap_or_else(|err| panic!("Bad read address value {:?}: {}", address, err));
+        let data_exp = smt_value(data).unwrap_or_else(|err| panic!("Bad memory write value {:?}: {}", data, err));
+        let addr_exp =
+            smt_value(address).unwrap_or_else(|err| panic!("Bad write address value {:?}: {}", address, err));
         // TODO: endianness?
         let mut mem_exp = Exp::Store(
             Box::new(Exp::Var(self.memory_var)),
@@ -135,6 +151,22 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         }
         self.memory_var = solver.fresh();
         solver.add(Def::DefineConst(self.memory_var, mem_exp));
+        let (tag_exp, tag_addr_exp) = match tag {
+            Some(tag_value) => {
+                let tag_exp = smt_value(tag_value)
+                    .unwrap_or_else(|err| panic!("Bad memory tag write value {:?}: {}", tag_value, err));
+                (tag_exp, addr_exp.clone())
+            }
+            None => (
+                Exp::Bits64(0, 1),
+                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(Exp::Bits64(0xffff_ffff_ffff_fff0u64, 64))),
+            ),
+        };
+        let tag_mem_exp =
+            Exp::Store(Box::new(Exp::Var(self.tag_memory_var)), Box::new(tag_addr_exp), Box::new(tag_exp));
+        self.tag_memory_var = solver.fresh();
+        solver.add(Def::DefineConst(self.tag_memory_var, tag_mem_exp));
+
         let kind = SmtKind::WriteData;
         let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver);
         solver.add(Def::Assert(address_constraint));
@@ -203,9 +235,10 @@ pub enum RegSource {
 // Replace the given subfield of a value with a symbolic variable (if
 // it isn't already), and return the variable.  Used in register
 // initialisation, below.
-fn setup_val<B: BV>(
-    shared_state: &SharedState<B>,
+fn setup_val<'a, B: BV>(
+    shared_state: &'a SharedState<B>,
     mut val: &mut Val<B>,
+    mut ty: &'a Ty<Name>,
     accessor: Vec<GVAccessor<String>>,
     solver: &mut Solver<B>,
 ) -> Sym {
@@ -214,26 +247,36 @@ fn setup_val<B: BV>(
             GVAccessor::Field(s) => {
                 let name =
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
+                match ty {
+                    Ty::Struct(struct_name) => ty = shared_state.structs.get(struct_name).unwrap().get(&name).unwrap(),
+                    _ => panic!("Bad type for struct {}", val.to_string(&shared_state.symtab)),
+                }
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get_mut(&name).unwrap(),
                     _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
                 }
             }
-            GVAccessor::Element(i) => match val {
-                Val::Vector(elements) => val = &mut elements[i],
-                _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
-            },
+            GVAccessor::Element(i) => {
+                match ty {
+                    Ty::Vector(element_ty) => ty = element_ty,
+                    Ty::FixedVector(_, element_ty) => ty = element_ty,
+                    _ => panic!("Bad type for vector {}", val.to_string(&shared_state.symtab)),
+                }
+                match val {
+                    Val::Vector(elements) => val = &mut elements[i],
+                    _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+                }
+            }
         }
     }
-    match val {
-        Val::Symbolic(var) => *var,
-        Val::Bits(bits) => {
+    match ty {
+        Ty::Bits(len) => {
             let var = solver.fresh();
-            solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(bits.len())));
+            solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(*len)));
             *val = Val::Symbolic(var);
             var
         }
-        _ => panic!("Register setup found unsupported value {}", val.to_string(&shared_state.symtab)),
+        _ => panic!("Register setup found unsupported type {:?}", ty),
     }
 }
 
@@ -243,7 +286,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     checkpoint: Checkpoint<B>,
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
-    _target: &T,
+    target: &T,
 ) -> (Frame<'ir, B>, Checkpoint<B>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
@@ -263,12 +306,13 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
             UVal::Uninit(ty) => {
                 let mut v = executor::symbolic(ty, shared_state, &mut solver)
                     .unwrap_or_else(|err| panic!("Unable to initialise register {}: {}", reg, err));
-                let var = setup_val(shared_state, &mut v, accessor, &mut solver);
+                let var = setup_val(shared_state, &mut v, &ty, accessor, &mut solver);
                 reg_vars.insert(reg, var);
                 *ex_val = UVal::Init(v)
             }
             UVal::Init(v) => {
-                let var = setup_val(shared_state, v, accessor, &mut solver);
+                let ty = register_types.get(&ex_var).unwrap();
+                let var = setup_val(shared_state, v, &ty, accessor, &mut solver);
                 reg_vars.insert(reg, var);
             }
         };
@@ -286,16 +330,21 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
     let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
+    let tag_memory_var = solver.fresh();
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory });
+        Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory, tag_memory_var });
     local_frame.memory_mut().set_client_info(memory_info);
 
     solver.add(smtlib::Def::DeclareConst(
         memory,
         smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
     ));
+    solver.add(smtlib::Def::DeclareConst(
+        tag_memory_var,
+        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(1))),
+    ));
 
-    T::init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
+    target.init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
 
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }
@@ -402,7 +451,8 @@ pub fn setup_opcode<B: BV>(
     let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
     let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
-    let read_val = local_frame.memory().read(Val::Enum(read_kind), pc.clone(), Val::I128(4), &mut solver).unwrap();
+    let read_val =
+        local_frame.memory().read(Val::Enum(read_kind), pc.clone(), Val::I128(4), &mut solver, false).unwrap();
 
     let opcode_var = solver.fresh();
     solver.add(Def::DeclareConst(opcode_var, Ty::BitVec(32)));

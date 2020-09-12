@@ -12,6 +12,7 @@ pub trait Target {
     fn regs() -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Any additional initialisation
     fn init<'ir, B: BV>(
+        &self,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<B>,
         solver: &mut Solver<B>,
@@ -40,6 +41,7 @@ impl Target for Aarch64 {
         regs
     }
     fn init<'ir, B: BV>(
+        &self,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<B>,
         _solver: &mut Solver<B>,
@@ -66,7 +68,9 @@ impl Target for Aarch64 {
     }
 }
 
-pub struct Morello {}
+pub struct Morello {
+    pub aarch64_compatible: bool,
+}
 
 impl Target for Morello {
     fn regs() -> Vec<(String, Vec<GVAccessor<String>>)> {
@@ -87,6 +91,7 @@ impl Target for Morello {
         regs
     }
     fn init<'ir, B: BV>(
+        &self,
         shared_state: &SharedState<'ir, B>,
         local_frame: &mut LocalFrame<B>,
         solver: &mut Solver<B>,
@@ -109,8 +114,10 @@ impl Target for Morello {
                 )));
             }
             if reg == "CPTR_EL3" {
+                let mut mask = 0x3feff8ff;
+                if self.aarch64_compatible { mask |= 0x00000200 };
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Bvand(Box::new(Exp::Bits64(0x3feffaff, 32)), Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0x00000000, 32)),
                 )));
             }

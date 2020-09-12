@@ -133,7 +133,7 @@ fn instruction_opcode<B: BV>(
 fn isla_main() -> i32 {
     let mut opts = opts::common_opts();
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
-    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello");
+    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("o", "output", "base name for output files", "<file>");
@@ -151,7 +151,8 @@ fn isla_main() -> i32 {
 
     match matches.opt_str("target-arch").as_deref().unwrap_or("aarch64") {
         "aarch64" => testgen_main(target::Aarch64 {}, hasher, opts, matches, arch),
-        "morello" => testgen_main(target::Morello {}, hasher, opts, matches, arch),
+        "morello" => testgen_main(target::Morello { aarch64_compatible: false }, hasher, opts, matches, arch),
+        "morello-aarch64" => testgen_main(target::Morello { aarch64_compatible: true }, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1

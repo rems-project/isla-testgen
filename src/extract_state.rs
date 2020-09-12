@@ -41,7 +41,6 @@ use isla_lib::ir;
 use isla_lib::ir::{Name, Ty, Val};
 use isla_lib::log;
 use isla_lib::memory;
-use isla_lib::primop::smt_value;
 use isla_lib::smt;
 use isla_lib::smt::smtlib::Exp;
 use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver};
@@ -106,8 +105,10 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
 pub struct PrePostStates<'ir, B> {
     pub code: Vec<(Range<memory::Address>, Vec<u8>)>,
     pub pre_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
+    pub pre_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)>,
     pub pre_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
     pub post_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
+    pub post_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)>,
     pub post_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
 }
 
@@ -157,9 +158,13 @@ fn regacc_int<B>(
     )
 }
 
-fn batch_memory<T, F>(memory: &BTreeMap<u64, T>, content: &F) -> Vec<(Range<memory::Address>, Vec<u8>)>
+fn batch_memory<T, F, Element>(
+    memory: &BTreeMap<u64, T>,
+    content: &F,
+    element_range: u64,
+) -> Vec<(Range<memory::Address>, Vec<Element>)>
 where
-    F: Fn(&T) -> Option<u8>,
+    F: Fn(&T) -> Option<Element>,
 {
     let mut m = Vec::new();
 
@@ -168,15 +173,15 @@ where
     for (&address, raw) in memory {
         match content(raw) {
             None => (),
-            Some(byte) => match current {
-                None => current = Some((address..address + 1, vec![byte])),
-                Some((old_range, mut bytes)) => {
+            Some(element) => match current {
+                None => current = Some((address..address + element_range, vec![element])),
+                Some((old_range, mut elements)) => {
                     if old_range.end == address {
-                        bytes.push(byte);
-                        current = Some((old_range.start..address + 1, bytes))
+                        elements.push(element);
+                        current = Some((old_range.start..address + element_range, elements))
                     } else {
-                        m.push((old_range, bytes));
-                        current = Some((address..address + 1, vec![byte]))
+                        m.push((old_range, elements));
+                        current = Some((address..address + element_range, vec![element]))
                     }
                 }
             },
@@ -297,7 +302,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let harness_registers: HashSet<(Name, Vec<GVAccessor<Name>>)> =
         T::regs().iter().map(|ra| regacc_int(shared_state, ra)).collect();
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
+    let mut initial_tag_memory: BTreeMap<u64, bool> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
+    let mut current_tag_memory: BTreeMap<u64, Option<bool>> = BTreeMap::new();
     let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
     // The boolean in current_registers indicates that a register is
     // set by the harness or the test sequence, and so should be
@@ -314,7 +321,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     for event in events {
         match &event {
-            Event::ReadMem { value, read_kind, address, bytes } if init_complete || is_ifetch(read_kind) => {
+            Event::ReadMem { value, read_kind, address, bytes, tag_value } if init_complete || is_ifetch(read_kind) => {
                 if !init_complete {
                     init_complete = true;
                     // We explicitly reset these registers to symbolic variables after
@@ -331,13 +338,14 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     Some(GroundVal::Bool(_)) => panic!("Memory read address was a boolean?!"),
                     None => panic!("Arbitrary memory read address"),
                 };
+                let address: u64 = address.try_into()?;
                 let val = get_model_val(&mut model, value)?;
                 match val {
                     Some(GroundVal::Bits(val)) => {
                         let vals = val.to_le_bytes();
                         if 8 * *bytes == val.len() {
                             for i in 0..*bytes {
-                                let byte_address = address.try_into()? + i as u64;
+                                let byte_address = address + i as u64;
                                 let byte_val = vals[i as usize];
                                 if current_memory.insert(byte_address, Some(byte_val)).is_none() {
                                     initial_memory.insert(byte_address, byte_val);
@@ -350,27 +358,63 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     Some(GroundVal::Bool(_)) => panic!("Memory read returned a boolean?!"),
                     None => println!("Ambivalent read of {} bytes from {:x}", bytes, address),
                 }
+                match tag_value {
+                    Some(tag_value) => {
+                        let tag_val = get_model_val(&mut model, tag_value)?;
+                        match tag_val {
+                            Some(GroundVal::Bits(v)) => {
+                                let tag = !v.is_zero();
+                                if current_tag_memory.insert(address, Some(tag)).is_none() {
+                                    initial_tag_memory.insert(address, tag);
+                                }
+                            }
+                            Some(GroundVal::Bool(_)) => panic!("Tag memory read returned wrong type (bool)"),
+                            None => println!("Ambivalent tag read from {:x}", address),
+                        }
+                    }
+                    None => (),
+                }
             }
-            Event::WriteMem { value: _, write_kind: _, address, data, bytes } => {
+            Event::WriteMem { value: _, write_kind: _, address, data, bytes, tag_value } => {
                 let address = match get_model_val(&mut model, address)? {
                     Some(GroundVal::Bits(bs)) => bs,
                     Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),
                     None => panic!("Arbitrary memory write address"),
                 };
+                let address: u64 = address.try_into()?;
                 let val = get_model_val(&mut model, data)?;
                 match val {
                     Some(GroundVal::Bits(val)) => {
                         let vals = val.to_le_bytes();
                         for i in 0..*bytes {
-                            current_memory.insert(address.try_into()? + i as u64, Some(vals[i as usize]));
+                            current_memory.insert(address + i as u64, Some(vals[i as usize]));
                         }
                     }
                     Some(GroundVal::Bool(_)) => panic!("Memory write value was a boolean?!"),
                     None => {
                         println!("Ambivalent write of {} bytes to {:x}", bytes, address);
                         for i in 0..*bytes {
-                            current_memory.insert(address.try_into()? + i as u64, None);
+                            current_memory.insert(address + i as u64, None);
                         }
+                    }
+                }
+                match tag_value {
+                    Some(tag_value) => {
+                        let tag_val = get_model_val(&mut model, tag_value)?;
+                        match tag_val {
+                            Some(GroundVal::Bits(val)) => {
+                                let tag = !val.is_zero();
+                                current_tag_memory.insert(address, Some(tag));
+                            }
+                            Some(GroundVal::Bool(_)) => panic!("Tag memory write has wrong type (bool)"),
+                            None => {
+                                println!("Ambivalent tag write to {:x}", address);
+                                current_tag_memory.insert(address, None);
+                            }
+                        }
+                    }
+                    None => {
+                        current_tag_memory.insert(address & 0xffff_ffff_ffff_fff0u64, Some(false));
                     }
                 }
             }
@@ -476,6 +520,11 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         print!("{:08x}:{:02x} ", address, value);
     }
     println!();
+    println!("Initial tag memory:");
+    for (address, value) in &initial_tag_memory {
+        print!("{:08x}:{}", address, if *value { "t" } else { "f" });
+    }
+    println!();
     for (regacc, _value) in &initial_registers {
         if !harness_registers.contains(regacc) {
             println!("Warning: depends on unsupported register {}", regacc_to_str(shared_state, regacc));
@@ -495,6 +544,15 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         }
     }
     println!();
+    println!("Final tag memory:");
+    for (address, value) in &current_tag_memory {
+        match *value {
+            Some(true) => print!("{:08x}:t ", address),
+            Some(false) => print!("{:08x}:f ", address),
+            None => print!("{:08x}:? ", address),
+        }
+    }
+    println!();
     print!("Final registers: ");
     for (regacc, (post_init, value)) in &current_registers {
         if *post_init {
@@ -508,6 +566,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     let mut initial_symbolic_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
         symbolic_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
+
+    let mut initial_symbolic_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)> =
+        symbolic_regions.iter().map(|r| (r.clone(), vec![false; (r.end - r.start) as usize])).collect();
 
     let mut initial_symbolic_code_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
         symbolic_code_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
@@ -526,6 +587,14 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
             }
         }
     }
+    for (address, tag) in &initial_tag_memory {
+        for (r, v) in &mut initial_symbolic_tag_memory {
+            if r.contains(address) {
+                v[(address - r.start) as usize] = *tag;
+                break;
+            }
+        }
+    }
 
     let pre_registers =
         initial_registers.iter().map(|((reg, acc), gv)| (regacc_name(shared_state, *reg, acc), *gv)).collect();
@@ -536,13 +605,16 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
             None => None,
         })
         .collect();
-    let post_memory = batch_memory(&current_memory, &(|x: &Option<u8>| *x));
+    let post_memory = batch_memory(&current_memory, &(|x: &Option<u8>| *x), 1);
+    let post_tag_memory = batch_memory(&current_tag_memory, &(|x: &Option<bool>| *x), 16);
 
     Ok(PrePostStates {
         pre_memory: initial_symbolic_memory,
+        pre_tag_memory: initial_symbolic_tag_memory,
         code: initial_symbolic_code_memory,
         pre_registers,
         post_registers,
         post_memory,
+        post_tag_memory,
     })
 }
