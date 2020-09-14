@@ -232,7 +232,9 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
+
     if target.has_tag_memory() {
+        writeln!(asm_file, "\t/* Write tags to memory */")?;
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
         writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
@@ -247,9 +249,12 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tb tag_init_loop")?;
         writeln!(asm_file, "tag_init_end:")?;
     }
+
+    writeln!(asm_file, "\t/* Write general purpose registers */")?;
     for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers) {
         writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
     }
+
     let vector_registers = get_vector_registers(&pre_post_states.pre_registers);
     if !vector_registers.is_empty() {
         writeln!(asm_file, "\t/* Vector registers */")?;
@@ -260,6 +265,8 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tldr q{}, =0x{:#x}", reg, value)?;
         }
     }
+
+    writeln!(asm_file, "\t/* Set up flags and system registers */")?;
     writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
     for (reg, value) in get_system_registers(target, &pre_post_states.pre_registers) {
@@ -273,6 +280,8 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tmsr {}, x{}{}", name, entry_reg, comment)?;
         }
     }
+
+    writeln!(asm_file, "\t/* Start test */")?;
     writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
     writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
     writeln!(asm_file, "\tbr x{}", entry_reg)?;
@@ -296,15 +305,19 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, reg)?;
         writeln!(asm_file, "\tb.ne comparison_fail")?;
     }
-    for (reg, value) in get_vector_registers(&pre_post_states.post_registers) {
-        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
-        writeln!(asm_file, "\tmov x{}, v{}.d[0]", exit_reg, reg)?;
-        writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
-        writeln!(asm_file, "\tb.ne comparison_fail")?;
-        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.shiftr(64).lower_u64())?;
-        writeln!(asm_file, "\tmov x{}, v{}.d[1]", exit_reg, reg)?;
-        writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
-        writeln!(asm_file, "\tb.ne comparison_fail")?;
+    let vector_registers = get_vector_registers(&pre_post_states.post_registers);
+    if !vector_registers.is_empty() {
+        writeln!(asm_file, "\t/* Check vector registers */")?;
+        for (reg, value) in vector_registers {
+            writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+            writeln!(asm_file, "\tmov x{}, v{}.d[0]", exit_reg, reg)?;
+            writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
+            writeln!(asm_file, "\tb.ne comparison_fail")?;
+            writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.shiftr(64).lower_u64())?;
+            writeln!(asm_file, "\tmov x{}, v{}.d[1]", exit_reg, reg)?;
+            writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
+            writeln!(asm_file, "\tb.ne comparison_fail")?;
+        }
     }
     writeln!(asm_file, "\t/* Check memory */")?;
     let mut name = 0;
