@@ -87,7 +87,8 @@ impl Target for Morello {
             .iter()
             .map(|flag| ("PSTATE".to_string(), vec![GVAccessor::Field(flag.to_string())]))
             .collect();
-        let mut sys_regs: Vec<(String, Vec<GVAccessor<String>>)> = ["CPTR_EL3", "SCTLR_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        let mut sys_regs: Vec<(String, Vec<GVAccessor<String>>)> =
+            ["CPTR_EL3", "SCTLR_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
         if !self.aarch64_compatible {
             sys_regs.push(("CCTLR_EL3".to_string(), vec![]));
         }
@@ -150,7 +151,8 @@ impl Target for Morello {
                 let mask: u64 = 0xffff_ff02;
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(0, 32)))));
+                    Box::new(Exp::Bits64(0, 32)),
+                )));
             }
         }
     }

@@ -152,7 +152,8 @@ fn get_system_registers<B: BV, T: Target>(
     target: &T,
     state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>,
 ) -> Vec<(String, B)> {
-    target.regs()
+    target
+        .regs()
         .iter()
         .filter_map(|(reg, acc)| {
             let zreg = zencode::encode(reg);
@@ -203,7 +204,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         for (region, tags) in pre_post_states.pre_tag_memory.iter() {
             for (i, tag) in tags.iter().enumerate() {
                 if *tag {
-                    writeln!(asm_file, "\t.dword {:#018x}", region.start+i as u64)?;
+                    writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
                 }
             }
         }
@@ -267,8 +268,9 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
         } else {
             // Avoid requirement for Morello assembler
-            let name = if reg == "CCTLR_EL3" { "S3_6_C1_C2_2" } else { &reg };
-            writeln!(asm_file, "\tmsr {}, x{}", name, entry_reg)?;
+            let (name, comment) =
+                if reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") } else { (reg.as_str(), "") };
+            writeln!(asm_file, "\tmsr {}, x{}{}", name, entry_reg, comment)?;
         }
     }
     writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
