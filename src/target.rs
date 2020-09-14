@@ -24,6 +24,7 @@ pub trait Target {
     fn gpr_pad() -> bool;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
+    fn has_tag_memory(&self) -> bool;
 }
 
 pub struct Aarch64 {}
@@ -65,6 +66,9 @@ impl Target for Aarch64 {
     }
     fn run_instruction_function() -> String {
         "Step_CPU".to_string()
+    }
+    fn has_tag_memory(&self) -> bool {
+        false
     }
 }
 
@@ -157,5 +161,8 @@ impl Target for Morello {
     }
     fn run_instruction_function() -> String {
         "step_model".to_string()
+    }
+    fn has_tag_memory(&self) -> bool {
+        !self.aarch64_compatible
     }
 }

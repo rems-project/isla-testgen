@@ -68,6 +68,25 @@ fn write_bytes(asm_file: &mut File, bytes: &[u8]) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+// Avoid a dependency on a Morello assembler by encoding these instructions directly.
+fn write_ldr_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0xc2400000 | imm << 12 | xn << 5 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // ldr c{}, [x{}, #{}]", v, ct, xn, imm)?;
+    Ok(())
+}
+
+fn write_sctag(asm_file: &mut File, cd: u32, cn: u32, xm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0xc2c08000 | xm << 16 | cn << 5 | cd;
+    writeln!(asm_file, "\t.inst {:#010x} // sctag c{}, c{}, c{}", v, cd, cn, xm)?;
+    Ok(())
+}
+
+fn write_str_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0xc2000000 | imm << 12 | xn << 5 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // str c{}, [x{}, #{}]", v, ct, xn, imm)?;
+    Ok(())
+}
+
 struct Flags {
     pre_nzcv: u32,
     post_nzcv_mask: u32,
@@ -178,6 +197,18 @@ pub fn make_asm_files<B: BV, T: Target>(
         write_bytes(&mut asm_file, contents)?;
         name += 1;
     }
+    if target.has_tag_memory() {
+        writeln!(asm_file, ".data")?;
+        writeln!(asm_file, "initial_tag_locations:")?;
+        for (region, tags) in pre_post_states.pre_tag_memory.iter() {
+            for (i, tag) in tags.iter().enumerate() {
+                if *tag {
+                    writeln!(asm_file, "\t.dword {:#018x}", region.start+i as u64)?;
+                }
+            }
+        }
+        writeln!(asm_file, "\t.dword 0")?;
+    }
 
     name = 0;
     for (region, contents) in pre_post_states.code.iter() {
@@ -200,6 +231,21 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
+    if target.has_tag_memory() {
+        writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
+        writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
+        writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
+        writeln!(asm_file, "\tldr x0, =initial_tag_locations")?;
+        writeln!(asm_file, "\tmov x1, #1")?;
+        writeln!(asm_file, "tag_init_loop:")?;
+        writeln!(asm_file, "\tldr x2, [x0], #8")?;
+        writeln!(asm_file, "\tcbz x2, tag_init_end")?;
+        write_ldr_off(&mut asm_file, 3, 2, 0)?;
+        write_sctag(&mut asm_file, 3, 3, 1)?;
+        write_str_off(&mut asm_file, 3, 2, 0)?;
+        writeln!(asm_file, "\tb tag_init_loop")?;
+        writeln!(asm_file, "tag_init_end:")?;
+    }
     for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers) {
         writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
     }
