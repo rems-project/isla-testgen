@@ -267,7 +267,7 @@ fn iter_struct_types<F, T, B: BV>(
 /// however if it's not supported by the harness then we warn about
 /// it.
 pub fn interrogate_model<'ir, B: BV, T: Target>(
-    _target: &T,
+    target: &T,
     _isa_config: &ISAConfig<B>,
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<'ir, B>,
@@ -298,7 +298,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
 
     let harness_registers: HashSet<(Name, Vec<GVAccessor<Name>>)> =
-        T::regs().iter().map(|ra| regacc_int(shared_state, ra)).collect();
+        target.regs().iter().map(|ra| regacc_int(shared_state, ra)).collect();
     let mut initial_memory: BTreeMap<u64, u8> = BTreeMap::new();
     let mut initial_tag_memory: BTreeMap<u64, bool> = BTreeMap::new();
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();

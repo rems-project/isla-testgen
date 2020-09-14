@@ -149,10 +149,10 @@ fn get_vector_registers<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), Gr
 }
 
 fn get_system_registers<B: BV, T: Target>(
-    _target: &T,
+    target: &T,
     state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>,
 ) -> Vec<(String, B)> {
-    T::regs()
+    target.regs()
         .iter()
         .filter_map(|(reg, acc)| {
             let zreg = zencode::encode(reg);
@@ -266,7 +266,9 @@ pub fn make_asm_files<B: BV, T: Target>(
         if reg == "SP_EL3" {
             writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
         } else {
-            writeln!(asm_file, "\tmsr {}, x{}", reg, entry_reg)?;
+            // Avoid requirement for Morello assembler
+            let name = if reg == "CCTLR_EL3" { "S3_6_C1_C2_2" } else { &reg };
+            writeln!(asm_file, "\tmsr {}, x{}", name, entry_reg)?;
         }
     }
     writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;

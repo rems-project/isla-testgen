@@ -9,7 +9,7 @@ use crate::extract_state::GVAccessor;
 
 pub trait Target {
     /// Registers supported by the test harness
-    fn regs() -> Vec<(String, Vec<GVAccessor<String>>)>;
+    fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
@@ -30,7 +30,7 @@ pub trait Target {
 pub struct Aarch64 {}
 
 impl Target for Aarch64 {
-    fn regs() -> Vec<(String, Vec<GVAccessor<String>>)> {
+    fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> = (0..31).map(|r| (format!("R{}", r), vec![])).collect();
         let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
         let mut flags = ["N", "Z", "C", "V"]
@@ -77,7 +77,7 @@ pub struct Morello {
 }
 
 impl Target for Morello {
-    fn regs() -> Vec<(String, Vec<GVAccessor<String>>)> {
+    fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
             (0..31).map(|r| (format!("_R{:02}", r), vec![])).collect();
         let mut vector_regs = (0..31).map(|i| ("_V".to_string(), vec![GVAccessor::Element(i)])).collect();
@@ -87,7 +87,10 @@ impl Target for Morello {
             .iter()
             .map(|flag| ("PSTATE".to_string(), vec![GVAccessor::Field(flag.to_string())]))
             .collect();
-        let mut sys_regs = ["CPTR_EL3", "SCTLR_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        let mut sys_regs: Vec<(String, Vec<GVAccessor<String>>)> = ["CPTR_EL3", "SCTLR_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        if !self.aarch64_compatible {
+            sys_regs.push(("CCTLR_EL3".to_string(), vec![]));
+        }
         regs.append(&mut vector_regs);
         regs.append(&mut other_regs);
         regs.append(&mut flags);
@@ -142,6 +145,12 @@ impl Target for Morello {
                     )),
                 )));
                 // TODO: other RES bits due to unimplemented extensions
+            }
+            if reg == "CCTLR_EL3" {
+                let mask: u64 = 0xffff_ff02;
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(0, 32)))));
             }
         }
     }

@@ -293,7 +293,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
     let mut reg_vars = HashMap::new();
 
-    for (reg, accessor) in T::regs() {
+    for (reg, accessor) in target.regs() {
         let ex_var = shared_state
             .symtab
             .get(&zencode::encode(&reg))
