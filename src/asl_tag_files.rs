@@ -289,22 +289,24 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
     Ok(())
 }
 
-pub fn read_tag_file(file_name: &str, exclusions: &[String]) -> Encodings {
-    let file = File::open(file_name).unwrap_or_else(|err| panic!("Unable to open tag file {}: {}", file_name, err));
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines().map(|l| l.unwrap());
+pub fn read_tag_files(file_names: &[String], exclusions: &[String]) -> Encodings {
     let mut encodings = Encodings::default();
     let exclude = RegexSet::new(exclusions).unwrap();
+    for file_name in file_names {
+        let file = File::open(file_name).unwrap_or_else(|err| panic!("Unable to open tag file {}: {}", file_name, err));
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines().map(|l| l.unwrap());
 
-    while let Some(line) = lines.next() {
-        if line.starts_with("TAG:") {
-            let components: Vec<&str> = line.split(':').collect();
-            if (components.len() == 3) && (components[2] == "diagram") && !(exclude.is_match(components[1])) {
-                read_diagram(components[1], &mut lines, &mut encodings).unwrap();
-            } else if (components.len() == 4) && (components[3] == "diagram") {
-                let name = components[1].to_owned() + ":" + components[2];
-                if !(exclude.is_match(&name)) {
-                    read_diagram(&name, &mut lines, &mut encodings).unwrap();
+        while let Some(line) = lines.next() {
+            if line.starts_with("TAG:") {
+                let components: Vec<&str> = line.split(':').collect();
+                if (components.len() == 3) && (components[2] == "diagram") && !(exclude.is_match(components[1])) {
+                    read_diagram(components[1], &mut lines, &mut encodings).unwrap();
+                } else if (components.len() == 4) && (components[3] == "diagram") {
+                    let name = components[1].to_owned() + ":" + components[2];
+                    if !(exclude.is_match(&name)) {
+                        read_diagram(&name, &mut lines, &mut encodings).unwrap();
+                    }
                 }
             }
         }

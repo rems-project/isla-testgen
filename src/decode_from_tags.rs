@@ -17,9 +17,9 @@ fn main() {
         std::process::exit(0);
     }
 
-    let filename = matches.opt_str("t").expect("No tag file given");
+    let file_names = matches.opt_strs("t");
     let exclusions = matches.opt_strs("exclude");
-    let encodings = asl_tag_files::read_tag_file(&filename, &exclusions);
+    let encodings = asl_tag_files::read_tag_files(&file_names, &exclusions);
     for opcode in matches.free {
         let hex = if opcode.starts_with("0x") { &opcode[2..] } else { &opcode };
         let val = u32::from_str_radix(hex, 16).unwrap_or_else(|_| panic!("Bad hex {}", opcode));

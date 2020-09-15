@@ -135,7 +135,7 @@ fn isla_main() -> i32 {
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
     opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
-    opts.optopt("t", "tag-file", "parse instruction encodings from tag file", "<file>");
+    opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("o", "output", "base name for output files", "<file>");
     opts.optopt("n", "number-gens", "number of tests to attempt to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
@@ -189,9 +189,11 @@ fn testgen_main<T: Target, B: BV>(
 
     let exclusions = matches.opt_strs("exclude");
 
-    let encodings = match matches.opt_str("tag-file") {
-        Some(name) => asl_tag_files::read_tag_file(&name, &exclusions),
-        None => asl_tag_files::Encodings::default(),
+    let tag_files = matches.opt_strs("tag-file");
+    let encodings = if tag_files.is_empty() {
+        asl_tag_files::Encodings::default()
+    } else {
+        asl_tag_files::read_tag_files(&tag_files, &exclusions)
     };
 
     let register_types: HashMap<Name, Ty<Name>> = arch
