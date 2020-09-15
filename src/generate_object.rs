@@ -198,7 +198,8 @@ pub fn make_asm_files<B: BV, T: Target>(
         write_bytes(&mut asm_file, contents)?;
         name += 1;
     }
-    if target.has_tag_memory() {
+    let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
+    if target.has_capabilites() {
         writeln!(asm_file, ".data")?;
         writeln!(asm_file, "initial_tag_locations:")?;
         for (region, tags) in pre_post_states.pre_tag_memory.iter() {
@@ -209,6 +210,13 @@ pub fn make_asm_files<B: BV, T: Target>(
             }
         }
         writeln!(asm_file, "\t.dword 0")?;
+
+        writeln!(asm_file, "initial_cap_values:")?;
+        for (reg, value) in &gprs {
+            let value_except_tag = value.slice(0, 128).unwrap();
+            writeln!(asm_file, "\t/* C{} */", reg)?;
+            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        }
     }
 
     name = 0;
@@ -233,7 +241,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
 
-    if target.has_tag_memory() {
+    if target.has_capabilites() {
         writeln!(asm_file, "\t/* Write tags to memory */")?;
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
@@ -248,11 +256,21 @@ pub fn make_asm_files<B: BV, T: Target>(
         write_str_off(&mut asm_file, 3, 2, 0)?;
         writeln!(asm_file, "\tb tag_init_loop")?;
         writeln!(asm_file, "tag_init_end:")?;
-    }
 
-    writeln!(asm_file, "\t/* Write general purpose registers */")?;
-    for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers) {
-        writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
+        writeln!(asm_file, "\t/* Write general purpose registers */")?;
+        writeln!(asm_file, "\tldr x{}, =initial_cap_values", entry_reg)?;
+        writeln!(asm_file, "\tmov x{}, #1", exit_reg)?;
+        for (i, (reg, value)) in gprs.iter().enumerate() {
+            write_ldr_off(&mut asm_file, *reg, entry_reg, i as u32)?;
+            if !value.slice(128,1).unwrap().is_zero() {
+                write_sctag(&mut asm_file, *reg, *reg, exit_reg)?;
+            }
+        }
+    } else {
+        writeln!(asm_file, "\t/* Write general purpose registers */")?;
+        for (reg, value) in gprs {
+            writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
+        }
     }
 
     let vector_registers = get_vector_registers(&pre_post_states.pre_registers);

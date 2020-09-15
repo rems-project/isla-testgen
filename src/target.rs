@@ -24,7 +24,7 @@ pub trait Target {
     fn gpr_pad() -> bool;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
-    fn has_tag_memory(&self) -> bool;
+    fn has_capabilites(&self) -> bool;
 }
 
 pub struct Aarch64 {}
@@ -67,7 +67,7 @@ impl Target for Aarch64 {
     fn run_instruction_function() -> String {
         "Step_CPU".to_string()
     }
-    fn has_tag_memory(&self) -> bool {
+    fn has_capabilites(&self) -> bool {
         false
     }
 }
@@ -115,7 +115,7 @@ impl Target for Morello {
         }
         for (reg, v) in regs {
             use isla_lib::smt::smtlib::*;
-            if reg.starts_with("_R") {
+            if self.aarch64_compatible && reg.starts_with("_R") {
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(128, 64, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits(vec![false; 129 - 64])),
@@ -173,7 +173,7 @@ impl Target for Morello {
     fn run_instruction_function() -> String {
         "step_model".to_string()
     }
-    fn has_tag_memory(&self) -> bool {
+    fn has_capabilites(&self) -> bool {
         !self.aarch64_compatible
     }
 }
