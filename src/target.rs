@@ -132,16 +132,21 @@ impl Target for Morello {
                 )));
             }
             if reg == "SCTLR_EL3" {
+                let reserved_mask = 0b1111_1111_1111_1111_1110_0100_1100_1111_0011_0101_1001_0111_1100_0111_1011_0000;
+                let reserved_vals = 0b0000_0000_0000_0000_0000_0000_0000_0000_0011_0000_1000_0101_0000_0000_0011_0000;
+                // EL3 instructions non-cachable, EL3 non-cachable, EL3 stage 1 translation disabled
+                let fixed_mask =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000_0101;
+                let fixed_vals =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000;
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(
                         Box::new(Exp::Bits64(
-                            0b1111_1111_1111_1111_1110_0100_1100_1111_0011_0101_1001_0111_1100_0111_1011_0000,
+                            reserved_mask | fixed_mask,
                             64,
                         )),
                         Box::new(Exp::Var(v)),
                     )),
                     Box::new(Exp::Bits64(
-                        0b0000_0000_0000_0000_0000_0000_0000_0000_0011_0000_1000_0101_0000_0000_0011_0000,
+                        reserved_vals | fixed_vals,
                         64,
                     )),
                 )));
