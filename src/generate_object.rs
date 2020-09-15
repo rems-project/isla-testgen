@@ -70,7 +70,7 @@ fn write_bytes(asm_file: &mut File, bytes: &[u8]) -> Result<(), Box<dyn std::err
 
 // Avoid a dependency on a Morello assembler by encoding these instructions directly.
 fn write_ldr_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
-    let v: u32 = 0xc2400000 | imm << 12 | xn << 5 | ct;
+    let v: u32 = 0xc2400000 | imm << 10 | xn << 5 | ct;
     writeln!(asm_file, "\t.inst {:#010x} // ldr c{}, [x{}, #{}]", v, ct, xn, imm)?;
     Ok(())
 }
@@ -82,7 +82,7 @@ fn write_sctag(asm_file: &mut File, cd: u32, cn: u32, xm: u32) -> Result<(), Box
 }
 
 fn write_str_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
-    let v: u32 = 0xc2000000 | imm << 12 | xn << 5 | ct;
+    let v: u32 = 0xc2000000 | imm << 10 | xn << 5 | ct;
     writeln!(asm_file, "\t.inst {:#010x} // str c{}, [x{}, #{}]", v, ct, xn, imm)?;
     Ok(())
 }
@@ -201,6 +201,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
     if target.has_capabilites() {
         writeln!(asm_file, ".data")?;
+        writeln!(asm_file, ".align 8")?;
         writeln!(asm_file, "initial_tag_locations:")?;
         for (region, tags) in pre_post_states.pre_tag_memory.iter() {
             for (i, tag) in tags.iter().enumerate() {
@@ -211,6 +212,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         }
         writeln!(asm_file, "\t.dword 0")?;
 
+        writeln!(asm_file, ".align 16")?;
         writeln!(asm_file, "initial_cap_values:")?;
         for (reg, value) in &gprs {
             let value_except_tag = value.slice(0, 128).unwrap();
@@ -262,7 +264,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tmov x{}, #1", exit_reg)?;
         for (i, (reg, value)) in gprs.iter().enumerate() {
             write_ldr_off(&mut asm_file, *reg, entry_reg, i as u32)?;
-            if !value.slice(128,1).unwrap().is_zero() {
+            if !value.slice(128, 1).unwrap().is_zero() {
                 write_sctag(&mut asm_file, *reg, *reg, exit_reg)?;
             }
         }
