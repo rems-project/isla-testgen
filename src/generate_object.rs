@@ -87,6 +87,12 @@ fn write_str_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), 
     Ok(())
 }
 
+fn write_cpy(asm_file: &mut File, cd: u32, cn: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0xc2c1d000 | cn << 5 | cd;
+    writeln!(asm_file, "\t.inst {:#010x} // cpy c{}, c{}", v, cd, cn)?;
+    Ok(())
+}
+
 struct Flags {
     pre_nzcv: u32,
     post_nzcv_mask: u32,
@@ -199,7 +205,8 @@ pub fn make_asm_files<B: BV, T: Target>(
         name += 1;
     }
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
-    if target.has_capabilites() {
+    let system_registers = get_system_registers(target, &pre_post_states.pre_registers);
+    if target.has_capabilities() {
         writeln!(asm_file, ".data")?;
         writeln!(asm_file, ".align 8")?;
         writeln!(asm_file, "initial_tag_locations:")?;
@@ -218,6 +225,13 @@ pub fn make_asm_files<B: BV, T: Target>(
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "\t/* C{} */", reg)?;
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        }
+        for (reg, value) in &system_registers {
+            if reg == "SP_EL3" {
+                let value_except_tag = value.slice(0, 128).unwrap();
+                writeln!(asm_file, "initial_csp_value:")?;
+                writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            }
         }
     }
 
@@ -243,7 +257,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
 
-    if target.has_capabilites() {
+    if target.has_capabilities() {
         writeln!(asm_file, "\t/* Write tags to memory */")?;
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
@@ -289,11 +303,22 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t/* Set up flags and system registers */")?;
     writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
-    for (reg, value) in get_system_registers(target, &pre_post_states.pre_registers) {
-        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+    for (reg, value) in system_registers {
         if reg == "SP_EL3" {
-            writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
+            if target.has_capabilities() {
+                writeln!(asm_file, "\tldr x{}, =initial_csp_value", entry_reg)?;
+                write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+                if !value.slice(128, 1).unwrap().is_zero() {
+                    writeln!(asm_file, "\tmov x{}, #1", exit_reg)?;
+                    write_sctag(&mut asm_file, entry_reg, entry_reg, exit_reg)?;
+                }
+                write_cpy(&mut asm_file, 31, entry_reg)?;
+            } else {
+                writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+                writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
+            }
         } else {
+            writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
             // Avoid requirement for Morello assembler
             let (name, comment) =
                 if reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") } else { (reg.as_str(), "") };
