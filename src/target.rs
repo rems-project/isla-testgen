@@ -25,6 +25,7 @@ pub trait Target {
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
     fn has_capabilities(&self) -> bool;
+    fn final_instruction(&self, exit_register: u32) -> u32;
 }
 
 pub struct Aarch64 {}
@@ -70,6 +71,9 @@ impl Target for Aarch64 {
     fn has_capabilities(&self) -> bool {
         false
     }
+    fn final_instruction(&self, exit_register: u32) -> u32 {
+        0xd61f0000 | (exit_register << 5) // br exit_register
+    }
 }
 
 pub struct Morello {
@@ -91,6 +95,8 @@ impl Target for Morello {
             ["CPTR_EL3", "SCTLR_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
         if !self.aarch64_compatible {
             sys_regs.push(("CCTLR_EL3".to_string(), vec![]));
+            sys_regs.push(("PSTATE".to_string(), vec![GVAccessor::Field("C64".to_string())]));
+            sys_regs.push(("PCC".to_string(), vec![]));
         }
         regs.append(&mut vector_regs);
         regs.append(&mut other_regs);
@@ -107,11 +113,13 @@ impl Target for Morello {
         regs: HashMap<String, Sym>,
     ) {
         use isla_lib::ir::*;
-        let pcc_id = shared_state.symtab.lookup("zPCC");
-        let pcc = local_frame.regs_mut().get_mut(&pcc_id).unwrap();
-        match pcc {
-            UVal::Init(Val::Bits(bv)) => *pcc = UVal::Init(Val::Bits(bv.set_slice(0, B::new(init_pc, 64)))),
-            _ => panic!("Unexpected value for PCC: {:?}", pcc),
+        if self.aarch64_compatible {
+            let pcc_id = shared_state.symtab.lookup("zPCC");
+            let pcc = local_frame.regs_mut().get_mut(&pcc_id).unwrap();
+            match pcc {
+                UVal::Init(Val::Bits(bv)) => *pcc = UVal::Init(Val::Bits(bv.set_slice(0, B::new(init_pc, 64)))),
+                _ => panic!("Unexpected value for PCC: {:?}", pcc),
+            }
         }
         for (reg, v) in regs {
             use isla_lib::smt::smtlib::*;
@@ -159,6 +167,16 @@ impl Target for Morello {
                     Box::new(Exp::Bits64(0, 32)),
                 )));
             }
+            if reg == "PCC" {
+                assert!(!self.aarch64_compatible);
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(init_pc, 64)))));
+                // The harness needs the PCC to have the executive permission for now
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(1, 1)))));
+            }
         }
     }
     fn is_gpr(name: &str) -> Option<u32> {
@@ -180,5 +198,12 @@ impl Target for Morello {
     }
     fn has_capabilities(&self) -> bool {
         !self.aarch64_compatible
+    }
+    fn final_instruction(&self, exit_register: u32) -> u32 {
+        if self.aarch64_compatible {
+            0xd61f0000 | (exit_register << 5) // br exit_register
+        } else {
+            0b11_0000101100_00100_0_0_100_00000_0_0_0_00 | (exit_register << 5) // br exit_capability
+        }
     }
 }

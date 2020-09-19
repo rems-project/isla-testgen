@@ -93,6 +93,24 @@ fn write_cpy(asm_file: &mut File, cd: u32, cn: u32) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+fn write_br(asm_file: &mut File, cn: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11_0000101100_00100_0_0_100_00000_0_0_0_00 | cn << 5;
+    writeln!(asm_file, "\t.inst {:#010x} // br c{}", v, cn)?;
+    Ok(())
+}
+
+fn write_cvtp(asm_file: &mut File, cd: u32, rn: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11000010110001011_0_1_100_00000_00000 | rn << 5 | cd;
+    writeln!(asm_file, "\t.inst {:#010x} // cvtp c{}, x{}", v, cd, rn)?;
+    Ok(())
+}
+
+fn write_scvalue(asm_file: &mut File, cd: u32, cn: u32, rm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11000010110_00000_0_1_0_000_00000_00000 | rm << 16 | cn << 5 | cd;
+    writeln!(asm_file, "\t.inst {:#010x} // scvalue c{}, c{}, x{}", v, cd, cn, rm)?;
+    Ok(())
+}
+
 struct Flags {
     pre_nzcv: u32,
     post_nzcv_mask: u32,
@@ -163,7 +181,7 @@ fn get_system_registers<B: BV, T: Target>(
         .iter()
         .filter_map(|(reg, acc)| {
             let zreg = zencode::encode(reg);
-            if acc.is_empty() && T::is_gpr(&zreg).is_none() && reg != "_PC" {
+            if acc.is_empty() && T::is_gpr(&zreg).is_none() && reg != "_PC" && reg != "PCC" {
                 match state.get(&(&zreg, vec![])) {
                     Some(GroundVal::Bits(bs)) => Some((reg.clone(), *bs)),
                     Some(v) => panic!("System register {} was expected to be a bitvector, found {}", reg, v),
@@ -210,6 +228,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, ".data")?;
         writeln!(asm_file, ".align 8")?;
         writeln!(asm_file, "initial_tag_locations:")?;
+        writeln!(asm_file, "\t.dword pcc_branch_value")?;
         for (region, tags) in pre_post_states.pre_tag_memory.iter() {
             for (i, tag) in tags.iter().enumerate() {
                 if *tag {
@@ -232,6 +251,16 @@ pub fn make_asm_files<B: BV, T: Target>(
                 writeln!(asm_file, "initial_csp_value:")?;
                 writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
             }
+        }
+        if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
+            let mut value_except_tag = value.slice(0, 128).unwrap();
+            if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+                if !bs.is_zero() {
+                    value_except_tag = value_except_tag.add_i128(1);
+                }
+            }
+            writeln!(asm_file, "pcc_branch_value:")?;
+            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
         }
     }
 
@@ -327,9 +356,20 @@ pub fn make_asm_files<B: BV, T: Target>(
     }
 
     writeln!(asm_file, "\t/* Start test */")?;
-    writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
-    writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
-    writeln!(asm_file, "\tbr x{}", entry_reg)?;
+    if target.has_capabilities() {
+        // We don't know what CCTLR_EL3.PCCBO is set to, so use an
+        // scvalue to be sure we get the right value
+        writeln!(asm_file, "\tldr x{}, =finish", entry_reg)?;
+        write_cvtp(&mut asm_file, exit_reg, entry_reg)?;
+        write_scvalue(&mut asm_file, exit_reg, exit_reg, entry_reg)?;
+        writeln!(asm_file, "\tldr x{}, =pcc_branch_value", entry_reg)?;
+        write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+        write_br(&mut asm_file, entry_reg)?;
+    } else {
+        writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
+        writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
+        writeln!(asm_file, "\tbr x{}", entry_reg)?;
+    }
 
     writeln!(asm_file, "finish:")?;
     /* Check the processor flags before they're trashed */

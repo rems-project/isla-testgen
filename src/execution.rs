@@ -587,7 +587,7 @@ pub fn run_model_instruction<'ir, B: BV>(
 // Find a couple of scratch registers for the harness, and add a branch to one
 // at the end of the test.
 pub fn finalize<B: BV, T: Target>(
-    _target: &T,
+    target: &T,
     shared_state: &SharedState<B>,
     frame: &Frame<B>,
     checkpoint: Checkpoint<B>,
@@ -632,7 +632,7 @@ pub fn finalize<B: BV, T: Target>(
     let exit_register = reg_iter.next().expect("Not enough scratch registers available");
 
     // Add branch instruction at the end of the sequence
-    let opcode: u32 = 0xd61f0000 | (*exit_register << 5); // br exit_register
+    let opcode: u32 = target.final_instruction(*exit_register);
     let (_, new_checkpoint) = setup_opcode(shared_state, frame, B::from_u32(opcode), None, checkpoint);
 
     (*entry_register, *exit_register, new_checkpoint)
