@@ -514,7 +514,12 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
         &move |tid, task_id, result, shared_state, solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             let mut events = solver.trace().to_vec();
-            let events: Vec<Event<B>> = events.drain(..).cloned().collect();
+            let events: Vec<Event<B>> = 
+                if dump_events {
+                    events.drain(..).cloned().collect()
+                } else {
+                    vec![]
+                };
             match result {
                 Ok((val, frame)) => {
                     if let Some((ex_val, ex_loc)) = frame.get_exception() {
