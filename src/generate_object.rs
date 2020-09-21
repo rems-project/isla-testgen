@@ -292,9 +292,6 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
 
-    writeln!(asm_file, "\tldr x0, =vector_table")?;
-    writeln!(asm_file, "\tmsr vbar_el3, x0")?;
-
     if target.has_capabilities() {
         writeln!(asm_file, "\t/* Write tags to memory */")?;
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
@@ -329,6 +326,9 @@ pub fn make_asm_files<B: BV, T: Target>(
             }
         }
     } else {
+        writeln!(asm_file, "\tldr x0, =vector_table")?;
+        writeln!(asm_file, "\tmsr vbar_el3, x0")?;
+
         writeln!(asm_file, "\t/* Write general purpose registers */")?;
         for (reg, value) in gprs {
             writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
