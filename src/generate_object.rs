@@ -294,6 +294,14 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
         writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
+
+        // We don't know what CCTLR_EL3.PCCBO is set to, so use an
+        // scvalue to be sure we get the right value
+        writeln!(asm_file, "\tldr x0, =vector_table")?;
+        write_cvtp(&mut asm_file, 1, 0)?;
+        write_scvalue(&mut asm_file, 1, 1, 0)?;
+        writeln!(asm_file, "\tmsr S3_6_C12_C0_0, x1 // CVBAR_EL3")?;
+
         writeln!(asm_file, "\tldr x0, =initial_tag_locations")?;
         writeln!(asm_file, "\tmov x1, #1")?;
         writeln!(asm_file, "tag_init_loop:")?;
