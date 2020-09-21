@@ -111,6 +111,12 @@ fn write_scvalue(asm_file: &mut File, cd: u32, cn: u32, rm: u32) -> Result<(), B
     Ok(())
 }
 
+fn write_msr_cvbar_el3(asm_file: &mut File, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11000010100_0_1_110_1100_0000_000_00000 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // msr cvbar_el3, c{}", v, ct)?;
+    Ok(())
+}
+
 struct Flags {
     pre_nzcv: u32,
     post_nzcv_mask: u32,
@@ -300,7 +306,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tldr x0, =vector_table")?;
         write_cvtp(&mut asm_file, 1, 0)?;
         write_scvalue(&mut asm_file, 1, 1, 0)?;
-        writeln!(asm_file, "\tmsr S3_6_C12_C0_0, x1 // CVBAR_EL3")?;
+        write_msr_cvbar_el3(&mut asm_file, 1)?; 
 
         writeln!(asm_file, "\tldr x0, =initial_tag_locations")?;
         writeln!(asm_file, "\tmov x1, #1")?;
