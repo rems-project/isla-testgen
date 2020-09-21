@@ -161,7 +161,7 @@ impl Target for Morello {
                 // TODO: other RES bits due to unimplemented extensions
             }
             if reg == "CCTLR_EL3" {
-                let mask: u64 = 0xffff_ff02;
+                let mask: u64 = 0xffff_ff02 | 0b10000; // Leave C64E = 0 for the harness
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0, 32)),

@@ -226,7 +226,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     let system_registers = get_system_registers(target, &pre_post_states.pre_registers);
     if target.has_capabilities() {
         writeln!(asm_file, ".data")?;
-        writeln!(asm_file, ".align 8")?;
+        writeln!(asm_file, ".balign 8")?;
         writeln!(asm_file, "initial_tag_locations:")?;
         writeln!(asm_file, "\t.dword pcc_branch_value")?;
         for (region, tags) in pre_post_states.pre_tag_memory.iter() {
@@ -238,7 +238,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         }
         writeln!(asm_file, "\t.dword 0")?;
 
-        writeln!(asm_file, ".align 16")?;
+        writeln!(asm_file, ".balign 16")?;
         writeln!(asm_file, "initial_cap_values:")?;
         for (reg, value) in &gprs {
             let value_except_tag = value.slice(0, 128).unwrap();
@@ -285,6 +285,9 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
+
+    writeln!(asm_file, "\tldr x0, =vector_table")?;
+    writeln!(asm_file, "\tmsr vbar_el3, x0")?;
 
     if target.has_capabilities() {
         writeln!(asm_file, "\t/* Write tags to memory */")?;
@@ -435,6 +438,41 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.ascii \"OK\\n\\004\"")?;
     writeln!(asm_file, "fail_message:")?;
     writeln!(asm_file, "\t.ascii \"FAILED\\n\\004\"")?;
+
+    writeln!(asm_file, "")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "vector_table:")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
+    writeln!(asm_file, "\t.balign 128")?;
+    writeln!(asm_file, "\tb comparison_fail")?;
 
     Ok(())
 }
