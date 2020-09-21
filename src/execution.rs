@@ -173,7 +173,8 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
     }
 }
 
-fn postprocess<'ir, B: BV>(
+fn postprocess<'ir, B: BV, T: Target>(
+    target: &T,
     tid: usize,
     _task_id: usize,
     local_frame: LocalFrame<'ir, B>,
@@ -196,6 +197,8 @@ fn postprocess<'ir, B: BV>(
     };
     let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver);
     solver.add(Def::Assert(pc_constraint));
+
+    target.postprocess(shared_state, &local_frame, &mut solver)?;
 
     let result = match solver.check_sat() {
         SmtResult::Sat => Ok((freeze_frame(&local_frame), smt::checkpoint(&mut solver))),
@@ -479,7 +482,8 @@ pub fn setup_opcode<B: BV>(
     (opcode_var, checkpoint(&mut solver))
 }
 
-pub fn run_model_instruction<'ir, B: BV>(
+pub fn run_model_instruction<'ir, B: BV, T: Target>(
+    target: &'ir T,
     model_function: &str,
     num_threads: usize,
     shared_state: &SharedState<'ir, B>,
@@ -519,7 +523,7 @@ pub fn run_model_instruction<'ir, B: BV>(
                     } else {
                         match val {
                             Val::Unit => collected
-                                .push((postprocess(tid, task_id, frame, shared_state, solver, &events), events)),
+                                .push((postprocess(target, tid, task_id, frame, shared_state, solver, &events), events)),
                             _ =>
                             // Anything else is an error!
                             {

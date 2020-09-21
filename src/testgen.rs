@@ -311,7 +311,7 @@ impl std::fmt::Display for GenerationError {
 impl Error for GenerationError {}
 
 fn generate_test<'ir, B: BV, T: Target>(
-    target: &T,
+    target: &'ir T,
     conf: &TestConf<'ir, B>,
     mut frame: Frame<'ir, B>,
     mut checkpoint: Checkpoint<B>,
@@ -335,6 +335,7 @@ fn generate_test<'ir, B: BV, T: Target>(
             let (opcode_var, op_checkpoint) =
                 setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
+                target,
                 &run_instruction_function,
                 conf.num_threads,
                 conf.shared_state,

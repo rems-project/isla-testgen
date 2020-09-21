@@ -2,12 +2,16 @@ use std::collections::HashMap;
 
 use isla_lib::concrete::BV;
 use isla_lib::executor::LocalFrame;
-use isla_lib::ir::SharedState;
+use isla_lib::ir::{SharedState, UVal, Val};
 use isla_lib::smt::{Solver, Sym};
+use isla_lib::smt::smtlib::{Def, Exp};
 
 use crate::extract_state::GVAccessor;
 
-pub trait Target {
+pub trait Target
+where
+    Self: Sync,
+{
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Any additional initialisation
@@ -22,6 +26,11 @@ pub trait Target {
     fn is_gpr(name: &str) -> Option<u32>;
     fn gpr_prefix() -> &'static str;
     fn gpr_pad() -> bool;
+    fn postprocess<'ir, B: BV>(&self,
+        shared_state: &SharedState<'ir, B>,
+        frame: &LocalFrame<B>,
+        solver: &mut Solver<B>,
+    ) -> Result<(), String>;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
     fn has_capabilities(&self) -> bool;
@@ -67,6 +76,13 @@ impl Target for Aarch64 {
     }
     fn run_instruction_function() -> String {
         "Step_CPU".to_string()
+    }
+    fn postprocess<'ir, B: BV>(&self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &LocalFrame<B>,
+        _solver: &mut Solver<B>,
+    ) -> Result<(), String> {
+        Ok(())
     }
     fn has_capabilities(&self) -> bool {
         false
@@ -176,6 +192,33 @@ impl Target for Morello {
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(1, 1)))));
+            }
+        }
+    }
+    fn postprocess<'ir, B: BV>(&self,
+        shared_state: &SharedState<'ir, B>,
+        frame: &LocalFrame<B>,
+        solver: &mut Solver<B>,
+    ) -> Result<(), String> {
+        if self.aarch64_compatible {
+            Ok(())
+        } else {
+            // Ensure that PCC has its tag set
+            let pcc_id = shared_state.symtab.lookup("zPCC");
+            let pcc = frame.regs().get(&pcc_id).unwrap();
+            match pcc {
+                UVal::Init(Val::Symbolic(v)) => {
+                    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(128, 128, Box::new(Exp::Var(*v)))), Box::new(Exp::Bits64(1,1)))));
+                    Ok(())
+                }
+                UVal::Init(Val::Bits(b)) => {
+                    if b.slice(128, 1).unwrap().is_zero() {
+                        Err(String::from("PCC has concrete value without tag"))
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => Err(format!("Bad PCC value {:?}", pcc)),
             }
         }
     }
