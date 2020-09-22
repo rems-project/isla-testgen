@@ -117,6 +117,12 @@ fn write_msr_cvbar_el3(asm_file: &mut File, ct: u32) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+fn write_chkeq(asm_file: &mut File, cn: u32, cm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11_000010110_00000_1_0_1_001_00000_0_0_0_01 | cm << 16 | cn << 5;
+    writeln!(asm_file, "\t.inst {:#010x} // chkeq c{}, c{}", v, cn, cm)?;
+    Ok(())
+}
+
 struct Flags {
     pre_nzcv: u32,
     post_nzcv_mask: u32,
@@ -229,33 +235,38 @@ pub fn make_asm_files<B: BV, T: Target>(
         name += 1;
     }
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
+    let post_gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers);
     let system_registers = get_system_registers(target, &pre_post_states.pre_registers);
     if target.has_capabilities() {
+        let mut extra_tags = vec![];
         writeln!(asm_file, ".data")?;
-        writeln!(asm_file, ".balign 8")?;
-        writeln!(asm_file, "initial_tag_locations:")?;
-        writeln!(asm_file, "\t.dword pcc_branch_value")?;
-        for (region, tags) in pre_post_states.pre_tag_memory.iter() {
-            for (i, tag) in tags.iter().enumerate() {
-                if *tag {
-                    writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
-                }
-            }
-        }
-        writeln!(asm_file, "\t.dword 0")?;
-
         writeln!(asm_file, ".balign 16")?;
         writeln!(asm_file, "initial_cap_values:")?;
-        for (reg, value) in &gprs {
+        for (i, (reg, value)) in gprs.iter().enumerate() {
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "\t/* C{} */", reg)?;
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            if !value.slice(128, 1).unwrap().is_zero() {
+                extra_tags.push(format!("initial_cap_values + {}", i * 16));
+            }
+        }
+        writeln!(asm_file, "final_cap_values:")?;
+        for (i, (reg, value)) in post_gprs.iter().enumerate() {
+            let value_except_tag = value.slice(0, 128).unwrap();
+            writeln!(asm_file, "\t/* C{} */", reg)?;
+            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            if !value.slice(128, 1).unwrap().is_zero() {
+                extra_tags.push(format!("final_cap_values + {}", i * 16));
+            }
         }
         for (reg, value) in &system_registers {
             if reg == "SP_EL3" {
                 let value_except_tag = value.slice(0, 128).unwrap();
                 writeln!(asm_file, "initial_csp_value:")?;
                 writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+                if !value.slice(128, 1).unwrap().is_zero() {
+                    extra_tags.push(String::from("initial_csp_value"));
+                }
             }
         }
         if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
@@ -268,6 +279,21 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "pcc_branch_value:")?;
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
         }
+
+        writeln!(asm_file, ".balign 8")?;
+        writeln!(asm_file, "initial_tag_locations:")?;
+        writeln!(asm_file, "\t.dword pcc_branch_value")?;
+        for (region, tags) in pre_post_states.pre_tag_memory.iter() {
+            for (i, tag) in tags.iter().enumerate() {
+                if *tag {
+                    writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
+                }
+            }
+        }
+        for address in extra_tags {
+            writeln!(asm_file, "\t.dword {}", address)?;
+        }
+        writeln!(asm_file, "\t.dword 0")?;
     }
 
     name = 0;
@@ -318,12 +344,8 @@ pub fn make_asm_files<B: BV, T: Target>(
 
         writeln!(asm_file, "\t/* Write general purpose registers */")?;
         writeln!(asm_file, "\tldr x{}, =initial_cap_values", entry_reg)?;
-        writeln!(asm_file, "\tmov x{}, #1", exit_reg)?;
-        for (i, (reg, value)) in gprs.iter().enumerate() {
+        for (i, (reg, _value)) in gprs.iter().enumerate() {
             write_ldr_off(&mut asm_file, *reg, entry_reg, i as u32)?;
-            if !value.slice(128, 1).unwrap().is_zero() {
-                write_sctag(&mut asm_file, *reg, *reg, exit_reg)?;
-            }
         }
     } else {
         writeln!(asm_file, "\tldr x0, =vector_table")?;
@@ -354,10 +376,6 @@ pub fn make_asm_files<B: BV, T: Target>(
             if target.has_capabilities() {
                 writeln!(asm_file, "\tldr x{}, =initial_csp_value", entry_reg)?;
                 write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
-                if !value.slice(128, 1).unwrap().is_zero() {
-                    writeln!(asm_file, "\tmov x{}, #1", exit_reg)?;
-                    write_sctag(&mut asm_file, entry_reg, entry_reg, exit_reg)?;
-                }
                 write_cpy(&mut asm_file, 31, entry_reg)?;
             } else {
                 writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
@@ -402,10 +420,19 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tb.ne comparison_fail")?;
     }
     writeln!(asm_file, "\t/* Check registers */")?;
-    for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers) {
-        writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
-        writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, reg)?;
-        writeln!(asm_file, "\tb.ne comparison_fail")?;
+    if target.has_capabilities() {
+        writeln!(asm_file, "\tldr x{}, =final_cap_values", entry_reg)?;
+        for (i, (reg, _value)) in post_gprs.iter().enumerate() {
+            write_ldr_off(&mut asm_file, exit_reg, entry_reg, i as u32)?;
+            write_chkeq(&mut asm_file, *reg, exit_reg)?;
+            writeln!(asm_file, "\tb.ne comparison_fail")?;
+        }
+    } else {
+        for (reg, value) in get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers) {
+            writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+            writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, reg)?;
+            writeln!(asm_file, "\tb.ne comparison_fail")?;
+        }
     }
     let vector_registers = get_vector_registers(&pre_post_states.post_registers);
     if !vector_registers.is_empty() {
