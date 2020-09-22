@@ -197,6 +197,8 @@ fn postprocess<'ir, B: BV, T: Target>(
     };
     let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver);
     solver.add(Def::Assert(pc_constraint));
+    // Alignment constraint
+    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(Exp::Bits64(0,2)))));
 
     target.postprocess(shared_state, &local_frame, &mut solver)?;
 
