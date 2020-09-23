@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use isla_lib::concrete::BV;
 use isla_lib::executor::LocalFrame;
-use isla_lib::ir::{SharedState, UVal, Val};
+use isla_lib::ir::{SharedState};
 use isla_lib::smt::{Solver, Sym};
-use isla_lib::smt::smtlib::{Def, Exp};
 
 use crate::extract_state::GVAccessor;
 
@@ -196,9 +195,9 @@ impl Target for Morello {
         }
     }
     fn postprocess<'ir, B: BV>(&self,
-        shared_state: &SharedState<'ir, B>,
-        frame: &LocalFrame<B>,
-        solver: &mut Solver<B>,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &LocalFrame<B>,
+        _solver: &mut Solver<B>,
     ) -> Result<(), String> {
         Ok(())
     }
