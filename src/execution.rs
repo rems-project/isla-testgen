@@ -94,17 +94,18 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             Box::new(read_exp),
             Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
         )));
-        match tag {
+        let tag_exp = match tag {
             Some(tag_value) => {
                 let tag_exp = smt_value(tag_value)
                     .unwrap_or_else(|err| panic!("Bad memory tag read value {:?}: {}", tag_value, err));
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(tag_exp),
+                    Box::new(tag_exp.clone()),
                     Box::new(Exp::Select(Box::new(Exp::Var(self.tag_memory_var)), Box::new(addr_exp.clone()))),
                 )));
+                Some(tag_exp)
             }
-            None => (),
-        }
+            None => None,
+        };
         let kind = match read_kind {
             Val::Enum(e) => {
                 if *e == self.read_ifetch {
@@ -115,7 +116,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             }
             _ => SmtKind::ReadData,
         };
-        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver);
+        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver, tag_exp.as_ref());
         solver.add(Def::Assert(address_constraint));
     }
 
@@ -163,12 +164,12 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             ),
         };
         let tag_mem_exp =
-            Exp::Store(Box::new(Exp::Var(self.tag_memory_var)), Box::new(tag_addr_exp), Box::new(tag_exp));
+            Exp::Store(Box::new(Exp::Var(self.tag_memory_var)), Box::new(tag_addr_exp), Box::new(tag_exp.clone()));
         self.tag_memory_var = solver.fresh();
         solver.add(Def::DefineConst(self.tag_memory_var, tag_mem_exp));
 
         let kind = SmtKind::WriteData;
-        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver);
+        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver, Some(&tag_exp));
         solver.add(Def::Assert(address_constraint));
     }
 }
@@ -195,7 +196,7 @@ fn postprocess<'ir, B: BV, T: Target>(
         UVal::Init(Val::Bits(b)) => Exp::Bits64(b.lower_u64(), b.len()),
         _ => panic!("Bad PC value {:?}", pc),
     };
-    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver);
+    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver, None);
     solver.add(Def::Assert(pc_constraint));
     // Alignment constraint
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(Exp::Bits64(0,2)))));
