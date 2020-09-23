@@ -213,7 +213,7 @@ fn postprocess<'ir, B: BV, T: Target>(
 
 // Get a single opcode for debugging
 fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, String> {
-    let cfg = smt::Config::new();
+    let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);

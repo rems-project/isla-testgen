@@ -275,7 +275,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
-    let cfg = smt::Config::new();
+    let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
