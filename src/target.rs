@@ -200,32 +200,7 @@ impl Target for Morello {
         frame: &LocalFrame<B>,
         solver: &mut Solver<B>,
     ) -> Result<(), String> {
-        if self.aarch64_compatible {
-            Ok(())
-        } else {
-            // Ensure that PCC is good enough to execute the next instruction
-            let pcc_id = shared_state.symtab.lookup("zPCC");
-            let pcc = frame.regs().get(&pcc_id).unwrap();
-            match pcc {
-                UVal::Init(Val::Symbolic(v)) => {
-                    // Tagged
-                    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(128, 128, Box::new(Exp::Var(*v)))), Box::new(Exp::Bits64(1,1)))));
-                    // Unsealed (not strictly necessary because BranchAddr will clear the tag of if PCC is sealed)
-                    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(109, 95, Box::new(Exp::Var(*v)))), Box::new(Exp::Bits64(0,15)))));
-                    // Execute permission
-                    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(125, 125, Box::new(Exp::Var(*v)))), Box::new(Exp::Bits64(1,1)))));
-                    Ok(())
-                }
-                UVal::Init(Val::Bits(b)) => {
-                    if b.slice(128, 1).unwrap().is_zero() {
-                        Err(String::from("PCC has concrete value without tag"))
-                    } else {
-                        Ok(())
-                    }
-                }
-                _ => Err(format!("Bad PCC value {:?}", pcc)),
-            }
-        }
+        Ok(())
     }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("z_R") {
