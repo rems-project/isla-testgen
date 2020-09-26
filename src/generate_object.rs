@@ -54,17 +54,27 @@ impl fmt::Display for HarnessError {
 impl Error for HarnessError {}
 
 fn write_bytes(asm_file: &mut File, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut zeros = 0;
     for line in bytes.chunks(16) {
-        write!(asm_file, "\t.byte")?;
-        let mut byte_iter = line.iter();
-        if let Some(byte) = byte_iter.next() {
-            write!(asm_file, " {:#04x}", byte)?;
-            for byte in byte_iter {
-                write!(asm_file, ", {:#04x}", byte)?;
+        if line.iter().all(|b| *b == 0) {
+            zeros += line.len();
+        } else {
+            if zeros > 0 {
+                writeln!(asm_file, "\t.zero {}", zeros)?;
+                zeros = 0;
             }
+            write!(asm_file, "\t.byte")?;
+            let mut byte_iter = line.iter();
+            if let Some(byte) = byte_iter.next() {
+                write!(asm_file, " {:#04x}", byte)?;
+                for byte in byte_iter {
+                    write!(asm_file, ", {:#04x}", byte)?;
+                }
+            }
+            writeln!(asm_file)?;
         }
-        writeln!(asm_file)?;
     }
+    if zeros > 0 { writeln!(asm_file, "\t.zero {}", zeros)?; };
     Ok(())
 }
 
@@ -303,9 +313,18 @@ pub fn make_asm_files<B: BV, T: Target>(
         if name == 0 {
             writeln!(asm_file, "test_start:")?;
         }
+        let mut zeros = 0;
         for word in contents.chunks(4) {
-            writeln!(asm_file, "\t.inst {:#010x}", u32::from_le_bytes(TryFrom::try_from(word)?))?;
+            let word_u32 = u32::from_le_bytes(TryFrom::try_from(word)?);
+            if word_u32 == 0 {
+                zeros += 4;
+            } else {
+                if zeros > 0 { writeln!(asm_file, "\t.zero {}", zeros)?; };
+                zeros = 0;
+                writeln!(asm_file, "\t.inst {:#010x}", word_u32)?;
+            }
         }
+        if zeros > 0 { writeln!(asm_file, "\t.zero {}", zeros)?; };
         name += 1;
     }
 
