@@ -99,7 +99,7 @@ impl Target for Morello {
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
             (0..31).map(|r| (format!("_R{:02}", r), vec![])).collect();
-        let mut vector_regs = (0..31).map(|i| ("_V".to_string(), vec![GVAccessor::Element(i)])).collect();
+        let mut vector_regs = (0..32).map(|i| ("_V".to_string(), vec![GVAccessor::Element(i)])).collect();
         let mut other_regs =
             ["_PC", "SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
         let mut flags = ["N", "Z", "C", "V"]
