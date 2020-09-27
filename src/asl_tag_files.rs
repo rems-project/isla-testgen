@@ -27,6 +27,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use rand::seq::SliceRandom;
+
 use regex::Regex;
 use regex::RegexSet;
 
@@ -79,6 +81,7 @@ struct Field {
     low: u32,
     name: String,
     pattern: String,
+    looks_like_a_register: bool,
 }
 
 impl FromStr for Field {
@@ -87,6 +90,7 @@ impl FromStr for Field {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         lazy_static! {
             static ref PATTERN: Regex = Regex::new(r"^[01x!()]+$").unwrap();
+            static ref REGISTER: Regex = Regex::new(r"^[RC][a-z0-9]$").unwrap();
         }
 
         let components: Vec<&str> = s.splitn(3, ' ').collect();
@@ -107,13 +111,24 @@ impl FromStr for Field {
         } else {
             "x".repeat((high - low + 1) as usize)
         };
-        Ok(Field { high, low, name, pattern })
+        let looks_like_a_register = pattern == "xxxxx" && REGISTER.is_match(&name);
+        Ok(Field { high, low, name, pattern, looks_like_a_register })
     }
 }
 
 impl Field {
-    fn random(&self) -> (u32, String) {
+    fn random(&self, register_bias: bool) -> (u32, String) {
         let mut bits: u32 = 0;
+        if register_bias && self.looks_like_a_register {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let r = if rand::random() {
+                *[0, 1, 2, 30, 31].choose(&mut rng).unwrap()
+            } else {
+                rng.gen_range(0, 32)
+            };
+            return (r, format!("{}:{}", self.name, r.to_string()))
+        }
         let mut string_bits = format!("{}:", self.name);
         let mut chars = self.pattern.chars();
         for i in (self.low..self.high + 1).rev() {
@@ -193,11 +208,11 @@ impl fmt::Display for Diagram {
 }
 
 impl Diagram {
-    fn random(&self) -> (u32, String) {
+    fn random(&self, register_bias: bool) -> (u32, String) {
         let mut bits: u32 = 0;
         let mut description = self.name.clone();
         for field in self.patterns.iter() {
-            let (new_bits, new_string) = field.random();
+            let (new_bits, new_string) = field.random(register_bias);
             bits |= new_bits;
             description.push(' ');
             description.push_str(&new_string);
@@ -239,7 +254,7 @@ impl Encodings {
         }
     }
 
-    pub fn random(&self, encoding: Encoding) -> (u32, String) {
+    pub fn random(&self, encoding: Encoding, register_bias: bool) -> (u32, String) {
         use rand::Rng;
         let diagrams = self.get(encoding);
         if diagrams.is_empty() {
@@ -247,7 +262,7 @@ impl Encodings {
         }
         let mut rng = rand::thread_rng();
         let i = rng.gen_range(0, diagrams.len());
-        diagrams[i].random()
+        diagrams[i].random(register_bias)
     }
 
     pub fn search(&self, encoding: Encoding, opcode: u32) -> Vec<&str> {

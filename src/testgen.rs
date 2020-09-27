@@ -99,9 +99,10 @@ fn instruction_opcode<B: BV>(
     encodings: &asl_tag_files::Encodings,
     isa_config: &ISAConfig<B>,
     instruction: &str,
+    register_bias: bool,
 ) -> (B, bool, String) {
     let (opcode, random, description) = if instruction == "_" {
-        let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64);
+        let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64, register_bias);
         println!("Instruction {:#010x}: {}", opcode, description);
         (opcode.to_le_bytes(), true, description)
     } else if instruction.starts_with("0x") {
@@ -142,6 +143,7 @@ fn isla_main() -> i32 {
     opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
     opts.optflag("", "events", "dump final events");
     opts.optflag("", "all-events", "dump events for every behaviour");
+    opts.optflag("", "uniform-registers", "Choose from registers uniformly, rather than with a bias");
     opts.optopt("", "z3-timeout", "Soft timeout for Z3 solver (60s default)", "<milliseconds>");
 
     let mut hasher = Sha256::new();
@@ -243,6 +245,7 @@ fn testgen_main<T: Target, B: BV>(
     let (frame, checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
 
     let base_name = &matches.opt_str("output").unwrap_or(String::from("test"));
+    let register_bias = !&matches.opt_present("uniform-registers");
 
     let testconf = TestConf {
         instructions: &instructions,
@@ -270,6 +273,7 @@ fn testgen_main<T: Target, B: BV>(
                 frame.clone(),
                 checkpoint.clone(),
                 &format!("{}{}", base_name, i + 1),
+                register_bias,
             ) {
                 Ok(()) => successes += 1,
                 Err(err) => println!("Generation attempt {} failed: {}", i + 1, err),
@@ -277,7 +281,7 @@ fn testgen_main<T: Target, B: BV>(
         }
         println!("---------- Complete, {} tests generated in {} attempts", successes, number_gens);
     } else if number_gens == 1 {
-        generate_test(&target, &testconf, frame, checkpoint, base_name)
+        generate_test(&target, &testconf, frame, checkpoint, base_name, register_bias)
             .unwrap_or_else(|err| println!("Generation attempt failed: {}", err));
     }
 
@@ -316,6 +320,7 @@ fn generate_test<'ir, B: BV, T: Target>(
     mut frame: Frame<'ir, B>,
     mut checkpoint: Checkpoint<B>,
     basename: &str,
+    register_bias: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_instruction_function = T::run_instruction_function();
 
@@ -327,7 +332,7 @@ fn generate_test<'ir, B: BV, T: Target>(
     for (instruction, opcode_mask) in conf.instructions {
         let mut random_attempts_left = conf.max_retries;
         loop {
-            let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction);
+            let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
             instr_map.insert(opcode, description);
             let mask_str = match opcode_mask {
                 None => "none".to_string(),
