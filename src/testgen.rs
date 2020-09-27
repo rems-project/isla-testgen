@@ -99,15 +99,15 @@ fn instruction_opcode<B: BV>(
     encodings: &asl_tag_files::Encodings,
     isa_config: &ISAConfig<B>,
     instruction: &str,
-) -> (B, bool) {
-    let (opcode, random) = if instruction == "_" {
+) -> (B, bool, String) {
+    let (opcode, random, description) = if instruction == "_" {
         let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64);
         println!("Instruction {:#010x}: {}", opcode, description);
-        (opcode.to_le_bytes(), true)
+        (opcode.to_le_bytes(), true, description)
     } else if instruction.starts_with("0x") {
         println!("Instruction {}", instruction);
         match u32::from_str_radix(&instruction[2..], 16) {
-            Ok(opcode) => (opcode.to_le_bytes(), false),
+            Ok(opcode) => (opcode.to_le_bytes(), false, instruction.to_string()),
             Err(e) => {
                 eprintln!("Could not parse instruction: {}", e);
                 exit(1)
@@ -119,7 +119,7 @@ fn instruction_opcode<B: BV>(
             Ok(bytes) => {
                 let mut opcode: [u8; 4] = Default::default();
                 opcode.copy_from_slice(&bytes);
-                (opcode, false)
+                (opcode, false, instruction.to_string())
             }
             Err(msg) => {
                 eprintln!("Could not assemble instruction: {}", msg);
@@ -127,7 +127,7 @@ fn instruction_opcode<B: BV>(
             }
         }
     };
-    (B::from_u32(if little_endian { u32::from_le_bytes(opcode) } else { u32::from_be_bytes(opcode) }), random)
+    (B::from_u32(if little_endian { u32::from_le_bytes(opcode) } else { u32::from_be_bytes(opcode) }), random, description)
 }
 
 fn isla_main() -> i32 {
@@ -323,10 +323,12 @@ fn generate_test<'ir, B: BV, T: Target>(
 
     let mut opcode_index = 0;
     let mut rng = rand::thread_rng();
+    let mut instr_map: HashMap<B, String> = HashMap::new();
     for (instruction, opcode_mask) in conf.instructions {
         let mut random_attempts_left = conf.max_retries;
         loop {
-            let (opcode, repeat) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction);
+            let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction);
+            instr_map.insert(opcode, description);
             let mask_str = match opcode_mask {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
@@ -389,7 +391,7 @@ fn generate_test<'ir, B: BV, T: Target>(
         conf.symbolic_regions,
         conf.symbolic_code_regions,
     )?;
-    generate_object::make_asm_files(target, basename, initial_state, entry_reg, exit_reg)?;
+    generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
     generate_object::build_elf_file(conf.isa_config, basename)?;
 
     Ok(())

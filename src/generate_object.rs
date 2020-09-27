@@ -219,6 +219,7 @@ fn get_system_registers<B: BV, T: Target>(
 pub fn make_asm_files<B: BV, T: Target>(
     target: &T,
     base_name: &str,
+    instr_map: &HashMap<B, String>,
     pre_post_states: PrePostStates<B>,
     entry_reg: u32,
     exit_reg: u32,
@@ -321,7 +322,12 @@ pub fn make_asm_files<B: BV, T: Target>(
             } else {
                 if zeros > 0 { writeln!(asm_file, "\t.zero {}", zeros)?; };
                 zeros = 0;
-                writeln!(asm_file, "\t.inst {:#010x}", word_u32)?;
+                write!(asm_file, "\t.inst {:#010x}", word_u32)?;
+                if let Some(description) = instr_map.get(&B::new(word_u32 as u64, 32)) {
+                    writeln!(asm_file, " // {}", description)?;
+                } else {
+                    writeln!(asm_file)?;
+                }
             }
         }
         if zeros > 0 { writeln!(asm_file, "\t.zero {}", zeros)?; };
