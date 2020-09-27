@@ -128,6 +128,11 @@ impl Target for Morello {
         regs: HashMap<String, Sym>,
     ) {
         use isla_lib::ir::*;
+        match local_frame.lets().get(&shared_state.symtab.lookup("z__a64_version")) {
+            Some(UVal::Init(Val::String(s))) => println!("Model version {}", s),
+            Some(v) => println!("Unexpected model version value {:?}", v),
+            None => println!("No version information in model"),
+        }
         if self.aarch64_compatible {
             let pcc_id = shared_state.symtab.lookup("zPCC");
             let pcc = local_frame.regs_mut().get_mut(&pcc_id).unwrap();
