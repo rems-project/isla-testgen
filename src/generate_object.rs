@@ -348,6 +348,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
         writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
+        writeln!(asm_file, "\tisb")?;
 
         // We don't know what CCTLR_EL3.PCCBO is set to, so use an
         // scvalue to be sure we get the right value
@@ -355,6 +356,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         write_cvtp(&mut asm_file, 1, 0)?;
         write_scvalue(&mut asm_file, 1, 1, 0)?;
         write_msr_cvbar_el3(&mut asm_file, 1)?; 
+        writeln!(asm_file, "\tisb")?;
 
         writeln!(asm_file, "\tldr x0, =initial_tag_locations")?;
         writeln!(asm_file, "\tmov x1, #1")?;
@@ -375,6 +377,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     } else {
         writeln!(asm_file, "\tldr x0, =vector_table")?;
         writeln!(asm_file, "\tmsr vbar_el3, x0")?;
+        writeln!(asm_file, "\tisb")?;
 
         writeln!(asm_file, "\t/* Write general purpose registers */")?;
         for (reg, value) in gprs {
@@ -388,6 +391,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\tbfc x{}, #10, #1", entry_reg)?;
         writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
+        writeln!(asm_file, "\tisb")?;
         for (reg, value) in vector_registers {
             writeln!(asm_file, "\tldr q{}, =0x{:#x}", reg, value)?;
         }
@@ -414,6 +418,7 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tmsr {}, x{}{}", name, entry_reg, comment)?;
         }
     }
+    writeln!(asm_file, "\tisb")?;
 
     writeln!(asm_file, "\t/* Start test */")?;
     if target.has_capabilities() {
