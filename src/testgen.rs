@@ -138,7 +138,7 @@ fn isla_main() -> i32 {
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("o", "output", "base name for output files", "<file>");
-    opts.optopt("n", "number-gens", "number of tests to attempt to generate", "<number>");
+    opts.optopt("n", "number-gens", "number of tests to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
     opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
     opts.optflag("", "events", "dump final events");
@@ -264,22 +264,33 @@ fn testgen_main<T: Target, B: BV>(
     };
 
     if number_gens > 1 {
-        let mut successes = 0;
+        let mut total_attempts = 0;
         for i in 0..number_gens {
-            println!("---------- Generation attempt {}", i + 1);
-            match generate_test(
-                &target,
-                &testconf,
-                frame.clone(),
-                checkpoint.clone(),
-                &format!("{}{}", base_name, i + 1),
-                register_bias,
-            ) {
-                Ok(()) => successes += 1,
-                Err(err) => println!("Generation attempt {} failed: {}", i + 1, err),
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                println!("---------- Generating test {} attempt {}", i + 1, attempts);
+                match generate_test(
+                    &target,
+                    &testconf,
+                    frame.clone(),
+                    checkpoint.clone(),
+                    &format!("{}{}", base_name, i + 1),
+                    register_bias,
+                ) {
+                    Ok(()) => break,
+                    Err(err) => {
+                        println!("Generating test {} attempt {} failed: {}", i + 1, attempts, err);
+                        if attempts == 10 {
+                            println!("Too many attempts, giving up...");
+                            return 1;
+                        }
+                    }
+                }
             }
+            total_attempts += attempts;
         }
-        println!("---------- Complete, {} tests generated in {} attempts", successes, number_gens);
+        println!("---------- Complete, {} tests generated after {} attempts", number_gens, total_attempts);
     } else if number_gens == 1 {
         generate_test(&target, &testconf, frame, checkpoint, base_name, register_bias)
             .unwrap_or_else(|err| println!("Generation attempt failed: {}", err));
