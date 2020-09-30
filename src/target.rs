@@ -112,6 +112,7 @@ impl Target for Morello {
             sys_regs.push(("CCTLR_EL3".to_string(), vec![]));
             sys_regs.push(("PSTATE".to_string(), vec![GVAccessor::Field("C64".to_string())]));
             sys_regs.push(("PCC".to_string(), vec![]));
+            sys_regs.push(("DDC_EL3".to_string(), vec![]));
         }
         regs.append(&mut vector_regs);
         regs.append(&mut other_regs);

@@ -85,6 +85,12 @@ fn write_ldr_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), 
     Ok(())
 }
 
+fn write_aldr_off(asm_file: &mut File, ct: u32, cn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0x82600000 | imm << 12 | cn << 5 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // ldr c{}, [c{}, #{}]", v, ct, cn, imm)?;
+    Ok(())
+}
+
 fn write_sctag(asm_file: &mut File, cd: u32, cn: u32, xm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0xc2c08000 | xm << 16 | cn << 5 | cd;
     writeln!(asm_file, "\t.inst {:#010x} // sctag c{}, c{}, c{}", v, cd, cn, xm)?;
@@ -124,6 +130,12 @@ fn write_scvalue(asm_file: &mut File, cd: u32, cn: u32, rm: u32) -> Result<(), B
 fn write_msr_cvbar_el3(asm_file: &mut File, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0b11000010100_0_1_110_1100_0000_000_00000 | ct;
     writeln!(asm_file, "\t.inst {:#010x} // msr cvbar_el3, c{}", v, ct)?;
+    Ok(())
+}
+
+fn write_msr_ddc_el3(asm_file: &mut File, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11000010100_0_1_011_0100_0001_001_00000 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // msr ddc_el3, c{}", v, ct)?;
     Ok(())
 }
 
@@ -248,6 +260,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
     let post_gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers);
     let system_registers = get_system_registers(target, &pre_post_states.pre_registers);
+    let mut cap_has_ddc = false;
     if target.has_capabilities() {
         let mut extra_tags = vec![];
         writeln!(asm_file, ".data")?;
@@ -287,13 +300,27 @@ pub fn make_asm_files<B: BV, T: Target>(
                     value_except_tag = value_except_tag.add_i128(1);
                 }
             }
-            writeln!(asm_file, "pcc_branch_value:")?;
+            writeln!(asm_file, "pcc_return_ddc_capabilities:")?;
+            writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
+            writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            writeln!(asm_file, "\t.dword finish")?;
+            writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
+            if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
+                cap_has_ddc = true;
+                let value_except_tag = value.slice(0, 128).unwrap();
+                writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+                if !value.slice(128, 1).unwrap().is_zero() {
+                    extra_tags.push(String::from("pcc_return_ddc_capability + 48"));
+                }
+            }
         }
 
         writeln!(asm_file, ".balign 8")?;
         writeln!(asm_file, "initial_tag_locations:")?;
-        writeln!(asm_file, "\t.dword pcc_branch_value")?;
+        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
+        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities + 16")?;
+        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities + 32")?;
         for (region, tags) in pre_post_states.pre_tag_memory.iter() {
             for (i, tag) in tags.iter().enumerate() {
                 if *tag {
@@ -410,7 +437,7 @@ pub fn make_asm_files<B: BV, T: Target>(
                 writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
                 writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
             }
-        } else {
+        } else if reg != "DDC_EL3" {
             writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
             // Avoid requirement for Morello assembler
             let (name, comment) =
@@ -422,13 +449,15 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     writeln!(asm_file, "\t/* Start test */")?;
     if target.has_capabilities() {
-        // We don't know what CCTLR_EL3.PCCBO is set to, so use an
-        // scvalue to be sure we get the right value
-        writeln!(asm_file, "\tldr x{}, =finish", entry_reg)?;
-        write_cvtp(&mut asm_file, exit_reg, entry_reg)?;
-        write_scvalue(&mut asm_file, exit_reg, exit_reg, entry_reg)?;
-        writeln!(asm_file, "\tldr x{}, =pcc_branch_value", entry_reg)?;
-        write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+        writeln!(asm_file, "\tldr x{}, =pcc_return_ddc_capabilities", exit_reg)?;
+        write_ldr_off(&mut asm_file, exit_reg, exit_reg, 0)?;
+        if cap_has_ddc {
+            write_aldr_off(&mut asm_file, entry_reg, exit_reg, 3)?;
+            write_msr_ddc_el3(&mut asm_file, entry_reg)?;
+            writeln!(asm_file, "\tisb")?;
+        }
+        write_aldr_off(&mut asm_file, entry_reg, exit_reg, 1)?;
+        write_aldr_off(&mut asm_file, exit_reg, exit_reg, 2)?;
         write_br(&mut asm_file, entry_reg)?;
     } else {
         writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
@@ -436,7 +465,17 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tbr x{}", entry_reg)?;
     }
 
+    // ------
+
     writeln!(asm_file, "finish:")?;
+    if target.has_capabilities() {
+        writeln!(asm_file, "\t/* Reconstruct general DDC from PCC */")?;
+        write_cvtp(&mut asm_file, entry_reg, 0)?;
+        write_scvalue(&mut asm_file, entry_reg, entry_reg, 31)?; // 31 is ZR
+        write_msr_ddc_el3(&mut asm_file, entry_reg)?;
+        writeln!(asm_file, "\tisb")?;
+    }
+
     /* Check the processor flags before they're trashed */
     if flags.post_nzcv_mask == 0 {
         writeln!(asm_file, "\t/* No processor flags to check */")?;
@@ -497,6 +536,14 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tldr x0, =ok_message")?;
     writeln!(asm_file, "\tb write_tube")?;
     writeln!(asm_file, "comparison_fail:")?;
+    // Repeat this because this is also the exception entry path
+    if target.has_capabilities() {
+        writeln!(asm_file, "\t/* Reconstruct general DDC from PCC */")?;
+        write_cvtp(&mut asm_file, entry_reg, 0)?;
+        write_scvalue(&mut asm_file, entry_reg, entry_reg, 31)?; // 31 is ZR
+        write_msr_ddc_el3(&mut asm_file, entry_reg)?;
+        writeln!(asm_file, "\tisb")?;
+    }
     writeln!(asm_file, "\tldr x0, =fail_message")?;
     writeln!(asm_file, "write_tube:")?;
     writeln!(asm_file, "\tldr x1, =trickbox")?;
