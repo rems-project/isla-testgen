@@ -311,7 +311,7 @@ pub fn make_asm_files<B: BV, T: Target>(
                 let value_except_tag = value.slice(0, 128).unwrap();
                 writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
                 if !value.slice(128, 1).unwrap().is_zero() {
-                    extra_tags.push(String::from("pcc_return_ddc_capability + 48"));
+                    extra_tags.push(String::from("pcc_return_ddc_capabilities + 48"));
                 }
             }
         }
