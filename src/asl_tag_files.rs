@@ -127,7 +127,7 @@ impl Field {
             } else {
                 rng.gen_range(0, 32)
             };
-            return (r, format!("{}:{}", self.name, r.to_string()))
+            return (r << self.low, format!("{}:{}", self.name, r.to_string()))
         }
         let mut string_bits = format!("{}:", self.name);
         let mut chars = self.pattern.chars();
