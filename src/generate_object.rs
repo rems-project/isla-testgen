@@ -142,7 +142,7 @@ fn write_msr_cap(asm_file: &mut File, (reg, op0, op1, crn, crm, op2): &SystemReg
 
 const REG_CVBAR_EL3: SystemRegister = ("CVBAR_EL3", 0b11, 0b110, 0b1100, 0b0000, 0b000);
 const REG_DDC_EL3  : SystemRegister = ("DDC_EL3",   0b11, 0b011, 0b0100, 0b0001, 0b001);
-const REG_RDDC_EL0 : SystemRegister = ("RDDC_EL3",  0b11, 0b011, 0b0100, 0b0011, 0b001);
+const REG_RDDC_EL0 : SystemRegister = ("RDDC_EL0",  0b11, 0b011, 0b0100, 0b0011, 0b001);
 const REG_RCSP_EL0 : SystemRegister = ("RSP_EL0",   0b11, 0b111, 0b0100, 0b0001, 0b011);
 
 fn write_chkeq(asm_file: &mut File, cn: u32, cm: u32) -> Result<(), Box<dyn std::error::Error>> {
