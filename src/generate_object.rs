@@ -127,17 +127,23 @@ fn write_scvalue(asm_file: &mut File, cd: u32, cn: u32, rm: u32) -> Result<(), B
     Ok(())
 }
 
-fn write_msr_cvbar_el3(asm_file: &mut File, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
-    let v: u32 = 0b11000010100_0_1_110_1100_0000_000_00000 | ct;
-    writeln!(asm_file, "\t.inst {:#010x} // msr cvbar_el3, c{}", v, ct)?;
+type SystemRegister = (&'static str, u32, u32, u32, u32, u32);
+
+fn write_msr_cap(asm_file: &mut File, (reg, op0, op1, crn, crm, op2): &SystemRegister, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let o0 = match op0 {
+        2 => 0,
+        3 => 1,
+        _ => panic!("Bad op0 for MSR: {}", op0),
+    };
+    let v: u32 = 0b11000010100_0_0_000_0000_0000_000_00000 | o0 << 19 | op1 << 16 | crn << 12 | crm << 8 | op2 << 5 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // msr {}, c{}", v, reg, ct)?;
     Ok(())
 }
 
-fn write_msr_ddc_el3(asm_file: &mut File, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
-    let v: u32 = 0b11000010100_0_1_011_0100_0001_001_00000 | ct;
-    writeln!(asm_file, "\t.inst {:#010x} // msr ddc_el3, c{}", v, ct)?;
-    Ok(())
-}
+const REG_CVBAR_EL3: SystemRegister = ("CVBAR_EL3", 0b11, 0b110, 0b1100, 0b0000, 0b000);
+const REG_DDC_EL3  : SystemRegister = ("DDC_EL3",   0b11, 0b011, 0b0100, 0b0001, 0b001);
+const REG_RDDC_EL0 : SystemRegister = ("RDDC_EL3",  0b11, 0b011, 0b0100, 0b0011, 0b001);
+const REG_RCSP_EL0 : SystemRegister = ("RSP_EL0",   0b11, 0b111, 0b0100, 0b0001, 0b011);
 
 fn write_chkeq(asm_file: &mut File, cn: u32, cm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0b11_000010110_00000_1_0_1_001_00000_0_0_0_01 | cm << 16 | cn << 5;
@@ -240,6 +246,10 @@ pub fn make_asm_files<B: BV, T: Target>(
     let mut asm_file = File::create(&format!("{}.s", base_name))?;
     let mut ld_file = File::create(&format!("{}.ld", base_name))?;
 
+    let mut system_cap_map: HashMap<String, SystemRegister> = HashMap::new();
+    system_cap_map.insert("RDDC_EL0".to_string(), REG_RDDC_EL0);
+    system_cap_map.insert("RSP_EL0".to_string(), REG_RCSP_EL0);
+
     writeln!(ld_file, "SECTIONS {{")?;
 
     let mut name = 0;
@@ -284,12 +294,12 @@ pub fn make_asm_files<B: BV, T: Target>(
             }
         }
         for (reg, value) in &system_registers {
-            if reg == "SP_EL3" {
+            if reg == "SP_EL3" || system_cap_map.contains_key(reg) {
                 let value_except_tag = value.slice(0, 128).unwrap();
-                writeln!(asm_file, "initial_csp_value:")?;
+                writeln!(asm_file, "initial_{}_value:", reg)?;
                 writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
                 if !value.slice(128, 1).unwrap().is_zero() {
-                    extra_tags.push(String::from("initial_csp_value"));
+                    extra_tags.push(format!("initial_{}_value", reg));
                 }
             }
         }
@@ -382,7 +392,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tldr x0, =vector_table")?;
         write_cvtp(&mut asm_file, 1, 0)?;
         write_scvalue(&mut asm_file, 1, 1, 0)?;
-        write_msr_cvbar_el3(&mut asm_file, 1)?; 
+        write_msr_cap(&mut asm_file, &REG_CVBAR_EL3, 1)?; 
         writeln!(asm_file, "\tisb")?;
 
         writeln!(asm_file, "\tldr x0, =initial_tag_locations")?;
@@ -430,13 +440,17 @@ pub fn make_asm_files<B: BV, T: Target>(
     for (reg, value) in system_registers {
         if reg == "SP_EL3" {
             if target.has_capabilities() {
-                writeln!(asm_file, "\tldr x{}, =initial_csp_value", entry_reg)?;
+                writeln!(asm_file, "\tldr x{}, =initial_SP_EL3_value", entry_reg)?;
                 write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
                 write_cpy(&mut asm_file, 31, entry_reg)?;
             } else {
                 writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
                 writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
             }
+        } else if let Some(operand) = system_cap_map.get(&reg) {
+            writeln!(asm_file, "\tldr x{}, =initial_{}_value", entry_reg, reg)?;
+            write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+            write_msr_cap(&mut asm_file, operand, entry_reg)?;
         } else if reg != "DDC_EL3" {
             writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
             // Avoid requirement for Morello assembler
@@ -453,7 +467,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         write_ldr_off(&mut asm_file, exit_reg, exit_reg, 0)?;
         if cap_has_ddc {
             write_aldr_off(&mut asm_file, entry_reg, exit_reg, 3)?;
-            write_msr_ddc_el3(&mut asm_file, entry_reg)?;
+            write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
             writeln!(asm_file, "\tisb")?;
         }
         write_aldr_off(&mut asm_file, entry_reg, exit_reg, 1)?;
@@ -472,7 +486,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\t/* Reconstruct general DDC from PCC */")?;
         write_cvtp(&mut asm_file, entry_reg, 0)?;
         write_scvalue(&mut asm_file, entry_reg, entry_reg, 31)?; // 31 is ZR
-        write_msr_ddc_el3(&mut asm_file, entry_reg)?;
+        write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
         writeln!(asm_file, "\tisb")?;
     }
 
@@ -541,7 +555,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\t/* Reconstruct general DDC from PCC */")?;
         write_cvtp(&mut asm_file, entry_reg, 0)?;
         write_scvalue(&mut asm_file, entry_reg, entry_reg, 31)?; // 31 is ZR
-        write_msr_ddc_el3(&mut asm_file, entry_reg)?;
+        write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
         writeln!(asm_file, "\tisb")?;
     }
     writeln!(asm_file, "\tldr x0, =fail_message")?;
