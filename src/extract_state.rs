@@ -96,7 +96,7 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
         // See comment about I128 above, and note that if we wanted full I128 support we'd need to
         // add a case for symbolic values, above
         Val::I128(i) => Ok(Some(GroundVal::Bits(B::zeros(128).add_i128(*i)))),
-        _ => Err(ExecError::Type("Bad value in get_model_val")),
+        _ => Err(ExecError::Type(format!("Bad value {:?} in get_model_val", val))),
     }
 }
 
@@ -350,7 +350,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                 }
                             }
                         } else {
-                            return Err(ExecError::Type("Memory read had wrong number of bytes"));
+                            return Err(ExecError::Type(format!("Memory read had wrong number of bits {} != {}", 8 * *bytes, val.len())));
                         }
                     }
                     Some(GroundVal::Bool(_)) => panic!("Memory read returned a boolean?!"),
