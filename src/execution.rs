@@ -30,6 +30,8 @@
 
 use crossbeam::queue::SegQueue;
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
@@ -485,6 +487,14 @@ pub fn setup_opcode<B: BV>(
     (opcode_var, checkpoint(&mut solver))
 }
 
+fn events_of<B: BV>(solver: &Solver<B>, active: bool) -> Vec<Event<B>> {
+    if active {
+        solver.trace().to_vec().drain(..).cloned().collect()
+    } else {
+        vec![]
+    }
+}
+
 pub fn run_model_instruction<'ir, B: BV, T: Target>(
     target: &'ir T,
     model_function: &str,
@@ -495,11 +505,14 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
     opcode_var: Sym,
     stop_set: &HashSet<Name>,
     dump_events: bool,
+    assertion_reports: &Option<String>,
 ) -> Vec<(Frame<'ir, B>, Checkpoint<B>)> {
     let function_id = shared_state.symtab.lookup(&zencode::encode(model_function));
     let (args, _, instrs) = shared_state.functions.get(&function_id).unwrap();
 
     let local_frame = executor::unfreeze_frame(frame);
+
+    let assertion_events = assertion_reports.is_some();
 
     let mut task =
         local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
@@ -516,15 +529,9 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
         queue.clone(),
         &move |tid, task_id, result, shared_state, solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
-            let mut events = solver.trace().to_vec();
-            let events: Vec<Event<B>> = 
-                if dump_events {
-                    events.drain(..).cloned().collect()
-                } else {
-                    vec![]
-                };
             match result {
                 Ok((val, frame)) => {
+                    let events = events_of(&solver, dump_events);
                     if let Some((ex_val, ex_loc)) = frame.get_exception() {
                         let s = ex_val.to_string(&shared_state.symtab);
                         collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
@@ -542,10 +549,21 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     }
                 }
                 Err((ExecError::Dead, _)) => {
+                    let events = events_of(&solver, dump_events);
                     log_from!(tid, log::VERBOSE, "dead");
                     collected.push((Err(String::from("dead")), events))
                 }
+                Err((ExecError::AssertionFailed(assertion), backtrace)) if assertion_events => {
+                    let events = events_of(&solver, true);
+                    log_from!(tid, log::VERBOSE, format!("Error assertion failure (recorded) {}", assertion));
+                    let mut s = format!("Assertion failed {}\n", assertion);
+                    for (f, pc) in backtrace.iter().rev() {
+                        s.push_str(&format!("  {} @ {}\n", shared_state.symtab.to_str(*f), pc));
+                    }
+                    collected.push((Err(s), events))
+                }
                 Err((err, backtrace)) => {
+                    let events = events_of(&solver, dump_events);
                     log_from!(tid, log::VERBOSE, format!("Error {:?}", err));
                     for (f, pc) in backtrace.iter().rev() {
                         log_from!(tid, log::VERBOSE, format!("  {} @ {}", shared_state.symtab.to_str(*f), pc));
@@ -587,6 +605,14 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     let mut handle = stdout.lock();
                     let events: Vec<Event<B>> = events.drain(..).rev().collect();
                     write_events(&mut handle, &events, &shared_state.symtab);
+                }
+                if let Some(file_name) = assertion_reports {
+                    if msg.starts_with("Assertion") {
+                        let mut report_file = OpenOptions::new().append(true).create(true).open(file_name).unwrap();
+                        write!(report_file, "{}", msg).unwrap();
+                        let events: Vec<Event<B>> = events.drain(..).rev().collect();
+                        write_events(&mut report_file, &events, &shared_state.symtab);
+                    }
                 }
             }
             // Empty queue

@@ -145,6 +145,7 @@ fn isla_main() -> i32 {
     opts.optflag("", "all-events", "dump events for every behaviour");
     opts.optflag("", "uniform-registers", "Choose from registers uniformly, rather than with a bias");
     opts.optopt("", "z3-timeout", "Soft timeout for Z3 solver (60s default)", "<milliseconds>");
+    opts.optopt("", "assertion-reports", "Write backtraces and events for failed assertions", "<file>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -261,6 +262,7 @@ fn testgen_main<T: Target, B: BV>(
         register_types: &register_types,
         symbolic_regions: &symbolic_regions,
         symbolic_code_regions: &symbolic_code_regions,
+        assertion_reports: matches.opt_str("assertion-reports"),
     };
 
     if number_gens > 1 {
@@ -313,6 +315,7 @@ struct TestConf<'ir, B> {
     register_types: &'ir HashMap<Name, Ty<Name>>,
     symbolic_regions: &'ir [Range<Address>],
     symbolic_code_regions: &'ir [Range<Address>],
+    assertion_reports: Option<String>,
 }
 
 #[derive(Debug)]
@@ -362,6 +365,7 @@ fn generate_test<'ir, B: BV, T: Target>(
                 opcode_var,
                 conf.stop_functions,
                 conf.dump_all_events,
+                &conf.assertion_reports,
             );
             let num_continuations = continuations.len();
             if num_continuations > 0 {
