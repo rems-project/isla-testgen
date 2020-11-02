@@ -372,16 +372,13 @@ pub fn make_asm_files<B: BV, T: Target>(
     }
 
     writeln!(ld_file, ".text  0x10300000 : {{ *(.text) }}")?;
-    writeln!(ld_file, "}}")?;
-    writeln!(ld_file, "ENTRY(preamble)")?;
-    writeln!(ld_file, "trickbox = 0x13000000;")?;
 
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
     writeln!(asm_file, "preamble:")?;
 
     if target.has_capabilities() {
-        writeln!(asm_file, "\t/* Write tags to memory */")?;
+        writeln!(asm_file, "\t/* Ensure Morello is on */")?;
         writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
         writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
         writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
@@ -389,12 +386,26 @@ pub fn make_asm_files<B: BV, T: Target>(
 
         // We don't know what CCTLR_EL3.PCCBO is set to, so use an
         // scvalue to be sure we get the right value
+        writeln!(asm_file, "\t/* Set exception handler */")?;
         writeln!(asm_file, "\tldr x0, =vector_table")?;
         write_cvtp(&mut asm_file, 1, 0)?;
         write_scvalue(&mut asm_file, 1, 1, 0)?;
         write_msr_cap(&mut asm_file, &REG_CVBAR_EL3, 1)?; 
         writeln!(asm_file, "\tisb")?;
 
+        writeln!(asm_file, "\t/* Set up translation */")?;
+        writeln!(asm_file, "\tldr x0, =tt_l1_base")?;
+        writeln!(asm_file, "\tmsr ttbr0_el3, x0")?;
+        writeln!(asm_file, "\tmov x0, #0xff")?;
+        writeln!(asm_file, "\tmsr mair_el3, x0")?;
+        writeln!(asm_file, "\tldr x0, =0x0d001519")?;
+        writeln!(asm_file, "\tmsr tcr_el3, x0")?;
+        writeln!(asm_file, "\tisb")?;
+        writeln!(asm_file, "\ttlbi alle3")?;
+        writeln!(asm_file, "\tdsb sy")?;
+        writeln!(asm_file, "\tisb")?;
+
+        writeln!(asm_file, "\t/* Write tags to memory */")?;
         writeln!(asm_file, "\tldr x0, =initial_tag_locations")?;
         writeln!(asm_file, "\tmov x1, #1")?;
         writeln!(asm_file, "tag_init_loop:")?;
@@ -483,10 +494,12 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     writeln!(asm_file, "finish:")?;
     if target.has_capabilities() {
-        writeln!(asm_file, "\t/* Reconstruct general DDC from PCC */")?;
+        writeln!(asm_file, "\t/* Reconstruct general DDC from PCC, keep MMU and cache on for comparisons */")?;
         write_cvtp(&mut asm_file, entry_reg, 0)?;
         write_scvalue(&mut asm_file, entry_reg, entry_reg, 31)?; // 31 is ZR
         write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
+        writeln!(asm_file, "\tldr x{}, =0x30851035", entry_reg)?;
+        writeln!(asm_file, "\tmsr SCTLR_EL3, x{}", entry_reg)?;
         writeln!(asm_file, "\tisb")?;
     }
 
@@ -546,16 +559,25 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tb.ne check_data_loop{}", name)?;
         name += 1;
     }
-    writeln!(asm_file, "\t/* Done, print message */")?;
+    writeln!(asm_file, "\t/* Done print message */")?;
+    if target.has_capabilities() {
+        writeln!(asm_file, "\t/* turn off MMU */")?;
+        writeln!(asm_file, "\tldr x{}, =0x30850030", entry_reg)?;
+        writeln!(asm_file, "\tmsr SCTLR_EL3, x{}", entry_reg)?;
+        writeln!(asm_file, "\tisb")?;
+    }
     writeln!(asm_file, "\tldr x0, =ok_message")?;
     writeln!(asm_file, "\tb write_tube")?;
+    writeln!(asm_file, "\t.global comparison_fail")?;
     writeln!(asm_file, "comparison_fail:")?;
-    // Repeat this because this is also the exception entry path
+    // Repeat DDC because this is also the exception entry path
     if target.has_capabilities() {
-        writeln!(asm_file, "\t/* Reconstruct general DDC from PCC */")?;
+        writeln!(asm_file, "\t/* Reconstruct general DDC from PCC, turn off MMU */")?;
         write_cvtp(&mut asm_file, entry_reg, 0)?;
         write_scvalue(&mut asm_file, entry_reg, entry_reg, 31)?; // 31 is ZR
         write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
+        writeln!(asm_file, "\tldr x{}, =0x30850030", entry_reg)?;
+        writeln!(asm_file, "\tmsr SCTLR_EL3, x{}", entry_reg)?;
         writeln!(asm_file, "\tisb")?;
     }
     writeln!(asm_file, "\tldr x0, =fail_message")?;
@@ -605,6 +627,20 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tb comparison_fail")?;
     writeln!(asm_file, "\t.balign 128")?;
     writeln!(asm_file, "\tb comparison_fail")?;
+
+    writeln!(asm_file, "")?;
+    writeln!(asm_file, "\t/* Translation table, single entry, capabilities allowed */")?;
+    writeln!(ld_file, ".text_tt 0x0000000010400000 : {{ *(text_tt) }}")?;
+    writeln!(asm_file, ".section text_tt, #alloc, #execinstr")?;
+    writeln!(asm_file, "\t.align 12")?;
+    writeln!(asm_file, "\t.global tt_l1_base")?;
+    writeln!(asm_file, "tt_l1_base:")?;
+    writeln!(asm_file, "\t.dword 0x3000000000000701")?;
+    writeln!(asm_file, "\t.fill 4088, 1, 0")?;
+
+    writeln!(ld_file, "}}")?;
+    writeln!(ld_file, "ENTRY(preamble)")?;
+    writeln!(ld_file, "trickbox = 0x13000000;")?;
 
     Ok(())
 }

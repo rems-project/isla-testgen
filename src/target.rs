@@ -1,11 +1,17 @@
 use std::collections::HashMap;
+use std::ops::Range;
 
 use isla_lib::concrete::BV;
 use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{SharedState};
-use isla_lib::smt::{Solver, Sym};
+use isla_lib::smt::{smtlib, Solver, Sym};
+use isla_lib::zencode;
 
 use crate::extract_state::GVAccessor;
+
+// For now we only need one entry in the translation table (and only
+// for Morello), so this is (address range, entry address, entry data).
+pub type TranslationTableInfo = (Range<u64>, u64, u64);
 
 pub trait Target
 where
@@ -22,6 +28,7 @@ where
         init_pc: u64,
         regs: HashMap<String, Sym>,
     );
+    fn translation_table_info(&self) -> Option<TranslationTableInfo>;
     fn is_gpr(name: &str) -> Option<u32>;
     fn gpr_prefix() -> &'static str;
     fn gpr_pad() -> bool;
@@ -59,6 +66,9 @@ impl Target for Aarch64 {
         _regs: HashMap<String, Sym>,
     ) {
     }
+    fn translation_table_info(&self) -> Option<TranslationTableInfo> {
+        None
+    }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("zR") {
             let reg_str = &name[2..];
@@ -95,6 +105,38 @@ pub struct Morello {
     pub aarch64_compatible: bool,
 }
 
+pub fn translation_table_exp(tt_info: &TranslationTableInfo, read_exp: smtlib::Exp, addr_exp: smtlib::Exp, bytes: u32) -> smtlib::Exp {
+    let (addresses, tt_base, entry) = tt_info;
+    let tt_base = *tt_base;
+    let entry = *entry;
+    use smtlib::Exp::{And, Ite, Eq, Bits64, Bvule, Bvult};
+
+    let bits = 8 * bytes;
+    let mask: u64 = 0xffffffffffffffff >> 64 - bits;
+    let address_prop = And(Box::new(Bvule(Box::new(Bits64(addresses.start, 64)), Box::new(addr_exp.clone()))),
+                           Box::new(Bvult(Box::new(addr_exp.clone()), Box::new(Bits64(addresses.end, 64)))));
+    let value_exp =
+        Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base, 64)))),
+            Box::new(Bits64(entry & mask, bits)),
+            Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 1, 64)))),
+                         Box::new(Bits64((entry >> 8) & mask, bits)),
+                         Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 2, 64)))),
+                                      Box::new(Bits64((entry >> 16) & mask, bits)),
+                                      Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 3, 64)))),
+                                                   Box::new(Bits64((entry >> 24) & mask, bits)),
+                                                   Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 4, 64)))),
+                                                                Box::new(Bits64((entry >> 32) & mask, bits)),
+                                                                Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 5, 64)))),
+                                                                             Box::new(Bits64((entry >> 40) & mask, bits)),
+                                                                             Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 6, 64)))),
+                                                                                          Box::new(Bits64((entry >> 48) & mask, bits)),
+                                                                                          Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 7, 64)))),
+                                                                                                       Box::new(Bits64((entry >> 56) & mask, bits)),
+                                                                                                       Box::new(Bits64(0, bits)))))))))))))))));
+    And(Box::new(address_prop),
+        Box::new(Eq(Box::new(read_exp), Box::new(value_exp))))
+}
+
 impl Target for Morello {
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
@@ -122,6 +164,13 @@ impl Target for Morello {
         regs.append(&mut sys_regs);
         regs
     }
+    // TODO: aarch64_compat version of translation table
+    fn translation_table_info(&self) -> Option<TranslationTableInfo> {
+        let tt_base: u64 = 0x0000_0000_1040_0000;
+        let entry: u64 = 0x3000_0000_0000_0701;
+
+        Some((tt_base..tt_base+4096, tt_base, entry))
+    }
     fn init<'ir, B: BV>(
         &self,
         shared_state: &SharedState<'ir, B>,
@@ -136,6 +185,18 @@ impl Target for Morello {
             Some(v) => println!("Unexpected model version value {:?}", v),
             None => println!("No version information in model"),
         }
+
+        let (_, tt_base, _) = self.translation_table_info().unwrap();
+        for (reg, value, size) in
+            [("TTBR0_EL3", tt_base, 64),
+             ("MAIR_EL3", 0xff, 64),
+             ("TCR_EL3", 0x0d001519, 32)].iter()
+        {
+            let id = shared_state.symtab.lookup(&zencode::encode(reg));
+            let val = local_frame.regs_mut().get_mut(&id).unwrap();
+            *val = UVal::Init(Val::Bits(B::new(*value, *size)));
+        }
+
         if self.aarch64_compatible {
             let pcc_id = shared_state.symtab.lookup("zPCC");
             let pcc = local_frame.regs_mut().get_mut(&pcc_id).unwrap();
@@ -167,9 +228,9 @@ impl Target for Morello {
             if reg == "SCTLR_EL3" {
                 let reserved_mask = 0b1111_1111_1111_1111_1110_0100_1100_1111_0011_0101_1001_0111_1100_0111_1011_0000;
                 let reserved_vals = 0b0000_0000_0000_0000_0000_0000_0000_0000_0011_0000_1000_0101_0000_0000_0011_0000;
-                // Little endian at EL3, EL3 instructions non-cachable, EL3 non-cachable, EL3 stage 1 translation disabled
+                // Little endian at EL3, EL3 instructions cachable, EL3 cachable, EL3 stage 1 translation enabled
                 let fixed_mask =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0010_0000_0000_0001_0000_0000_0101;
-                let fixed_vals =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000;
+                let fixed_vals =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000_0101;
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(
                         Box::new(Exp::Bits64(
@@ -186,7 +247,9 @@ impl Target for Morello {
                 // TODO: other RES bits due to unimplemented extensions
             }
             if reg == "CCTLR_EL3" {
-                let mask: u64 = 0xffff_ff02 | 0b10000; // Leave C64E = 0 for the harness
+                let mask: u64 = 0xffff_ff02
+                    | 0b1 // fix page table tag generation bit (want to avoid unnecessary fork)
+                    | 0b10000; // Leave C64E = 0 for the harness
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0, 32)),

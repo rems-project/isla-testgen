@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::extract_state::GVAccessor;
-use crate::target::Target;
+use crate::target::{Target, TranslationTableInfo};
 
 use isla_lib::concrete::BV;
 use isla_lib::error::ExecError;
@@ -69,8 +69,15 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp 
 }
 
 // TODO: tagless tests for plain aarch64
+
+// NB: does not support symbolic accesses to Concrete memory regions,
+// or writes to the translation table.  The translation table is
+// represented separately because adding a large amount of data to an
+// array slowed down the solver unacceptably.
+
 #[derive(Debug, Clone)]
 struct SeqMemory {
+    translation_table: Option<TranslationTableInfo>,
     read_ifetch: EnumMember,
     memory_var: Sym,
     tag_memory_var: Sym,
@@ -92,18 +99,19 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
 
         let read_exp = smt_value(value).unwrap_or_else(|err| panic!("Bad memory read value {:?}: {}", value, err));
         let addr_exp = smt_value(address).unwrap_or_else(|err| panic!("Bad read address value {:?}: {}", address, err));
-        solver.add(Def::Assert(Exp::Eq(
-            Box::new(read_exp),
+        let mut read_prop = Exp::Eq(
+            Box::new(read_exp.clone()),
             Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
-        )));
+        );
         let tag_exp = match tag {
             Some(tag_value) => {
                 let tag_exp = smt_value(tag_value)
                     .unwrap_or_else(|err| panic!("Bad memory tag read value {:?}: {}", tag_value, err));
-                solver.add(Def::Assert(Exp::Eq(
+                let prop = Exp::Eq(
                     Box::new(tag_exp.clone()),
                     Box::new(Exp::Select(Box::new(Exp::Var(self.tag_memory_var)), Box::new(addr_exp.clone()))),
-                )));
+                );
+                read_prop = Exp::And(Box::new(read_prop), Box::new(prop));
                 Some(tag_exp)
             }
             None => None,
@@ -119,7 +127,20 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             _ => SmtKind::ReadData,
         };
         let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver, tag_exp.as_ref());
-        solver.add(Def::Assert(address_constraint));
+
+        let full_constraint = match &self.translation_table {
+            Some(tt_info) => {
+                let tt_prop = crate::target::translation_table_exp(tt_info, read_exp, addr_exp, bytes);
+                let tt_prop = match tag_exp {
+                    Some(tag_exp) => Exp::And(Box::new(Exp::Eq(Box::new(tag_exp), Box::new(Exp::Bits64(0, 1)))), Box::new(tt_prop)),
+                    None => tt_prop,
+                };
+                Exp::Ite(Box::new(address_constraint), Box::new(read_prop), Box::new(tt_prop))
+            }
+            None => Exp::And(Box::new(address_constraint), Box::new(read_prop)),
+        };
+
+        solver.add(Def::Assert(full_constraint));
     }
 
     fn symbolic_write(
@@ -339,9 +360,6 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
     let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
     let tag_memory_var = solver.fresh();
-    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { read_ifetch: read_kind, memory_var: memory, tag_memory_var });
-    local_frame.memory_mut().set_client_info(memory_info);
 
     solver.add(smtlib::Def::DeclareConst(
         memory,
@@ -353,6 +371,11 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     ));
 
     target.init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
+
+    let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
+        Box::new(SeqMemory { translation_table: target.translation_table_info(), read_ifetch: read_kind, memory_var: memory, tag_memory_var });
+    local_frame.memory_mut().set_client_info(memory_info);
+    local_frame.memory().log();
 
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }

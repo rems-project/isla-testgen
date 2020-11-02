@@ -238,7 +238,6 @@ fn testgen_main<T: Target, B: BV>(
     for r in &symbolic_code_regions {
         memory.add_symbolic_code_region(r.clone());
     }
-    memory.log();
 
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
