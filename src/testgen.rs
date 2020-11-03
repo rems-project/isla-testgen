@@ -146,16 +146,26 @@ fn isla_main() -> i32 {
     opts.optflag("", "uniform-registers", "Choose from registers uniformly, rather than with a bias");
     opts.optopt("", "z3-timeout", "Soft timeout for Z3 solver (60s default)", "<milliseconds>");
     opts.optopt("", "assertion-reports", "Write backtraces and events for failed assertions", "<file>");
+    opts.optflag("", "translation-in-symbolic-execution", "Turn on the MMU with a simple translation table during symbolic execution");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
 
     isla_lib::smt::global_set_param_value("timeout", matches.opt_str("z3-timeout").as_deref().unwrap_or("60000"));
 
+    let translation_in_symbolic_execution = matches.opt_present("translation-in-symbolic-execution");
+
     match matches.opt_str("target-arch").as_deref().unwrap_or("aarch64") {
-        "aarch64" => testgen_main(target::Aarch64 {}, hasher, opts, matches, arch),
-        "morello" => testgen_main(target::Morello { aarch64_compatible: false }, hasher, opts, matches, arch),
-        "morello-aarch64" => testgen_main(target::Morello { aarch64_compatible: true }, hasher, opts, matches, arch),
+        "aarch64" => {
+            if translation_in_symbolic_execution {
+                eprintln!("translation-in-symbolic-execution not implemented for plain Aarch64");
+                1
+            } else {
+                testgen_main(target::Aarch64 {}, hasher, opts, matches, arch)
+            }
+        }
+        "morello" => testgen_main(target::Morello { aarch64_compatible: false, translation_in_symbolic_execution }, hasher, opts, matches, arch),
+        "morello-aarch64" => testgen_main(target::Morello { aarch64_compatible: true, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1

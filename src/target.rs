@@ -103,6 +103,7 @@ impl Target for Aarch64 {
 
 pub struct Morello {
     pub aarch64_compatible: bool,
+    pub translation_in_symbolic_execution: bool,
 }
 
 pub fn translation_table_exp(tt_info: &TranslationTableInfo, read_exp: smtlib::Exp, addr_exp: smtlib::Exp, bytes: u32) -> smtlib::Exp {
@@ -169,7 +170,11 @@ impl Target for Morello {
         let tt_base: u64 = 0x0000_0000_1040_0000;
         let entry: u64 = 0x3000_0000_0000_0701;
 
-        Some((tt_base..tt_base+4096, tt_base, entry))
+        if self.translation_in_symbolic_execution {
+            Some((tt_base..tt_base+4096, tt_base, entry))
+        } else {
+            None
+        }
     }
     fn init<'ir, B: BV>(
         &self,
@@ -186,15 +191,17 @@ impl Target for Morello {
             None => println!("No version information in model"),
         }
 
-        let (_, tt_base, _) = self.translation_table_info().unwrap();
-        for (reg, value, size) in
-            [("TTBR0_EL3", tt_base, 64),
-             ("MAIR_EL3", 0xff, 64),
-             ("TCR_EL3", 0x0d001519, 32)].iter()
-        {
-            let id = shared_state.symtab.lookup(&zencode::encode(reg));
-            let val = local_frame.regs_mut().get_mut(&id).unwrap();
-            *val = UVal::Init(Val::Bits(B::new(*value, *size)));
+        if self.translation_in_symbolic_execution {
+            let (_, tt_base, _) = self.translation_table_info().unwrap();
+            for (reg, value, size) in
+                [("TTBR0_EL3", tt_base, 64),
+                 ("MAIR_EL3", 0xff, 64),
+                 ("TCR_EL3", 0x0d001519, 32)].iter()
+            {
+                let id = shared_state.symtab.lookup(&zencode::encode(reg));
+                let val = local_frame.regs_mut().get_mut(&id).unwrap();
+                *val = UVal::Init(Val::Bits(B::new(*value, *size)));
+            }
         }
 
         if self.aarch64_compatible {
@@ -226,11 +233,17 @@ impl Target for Morello {
                 )));
             }
             if reg == "SCTLR_EL3" {
-                let reserved_mask = 0b1111_1111_1111_1111_1110_0100_1100_1111_0011_0101_1001_0111_1100_0111_1011_0000;
-                let reserved_vals = 0b0000_0000_0000_0000_0000_0000_0000_0000_0011_0000_1000_0101_0000_0000_0011_0000;
-                // Little endian at EL3, EL3 instructions cachable, EL3 cachable, EL3 stage 1 translation enabled
-                let fixed_mask =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0010_0000_0000_0001_0000_0000_0101;
-                let fixed_vals =    0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000_0101;
+                let reserved_mask =  0b1111_1111_1111_1111_1110_0100_1100_1111_0011_0101_1001_0111_1100_0111_1011_0000;
+                let reserved_vals =  0b0000_0000_0000_0000_0000_0000_0000_0000_0011_0000_1000_0101_0000_0000_0011_0000;
+                let fixed_mask = 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0010_0000_0000_0001_0000_0000_0101;
+                let fixed_vals =
+                    if self.translation_in_symbolic_execution {
+                        // Little endian at EL3, EL3 instructions cachable, EL3 cachable, EL3 stage 1 translation enabled
+                        0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000_0101
+                    } else {
+                        // Little endian at EL3, EL3 instructions non-cachable, EL3 non-cachable, EL3 stage 1 translation disabled
+                        0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000
+                    };
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(
                         Box::new(Exp::Bits64(
