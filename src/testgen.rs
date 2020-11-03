@@ -286,7 +286,7 @@ fn testgen_main<T: Target, B: BV>(
                     &testconf,
                     frame.clone(),
                     checkpoint.clone(),
-                    &format!("{}{}", base_name, i + 1),
+                    &format!("{}{:03}", base_name, i + 1),
                     register_bias,
                 ) {
                     Ok(()) => break,
