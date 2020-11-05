@@ -463,7 +463,10 @@ pub fn make_asm_files<B: BV, T: Target>(
             write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
             write_msr_cap(&mut asm_file, operand, entry_reg)?;
         } else if reg != "DDC_EL3" {
-            writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+            let mut value = value.lower_u64();
+            // Ensure MMU is on for Morello even if we didn't use it in symbolic execution
+            if reg == "SCTLR_EL3" && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
+            writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value)?;
             // Avoid requirement for Morello assembler
             let (name, comment) =
                 if reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") } else { (reg.as_str(), "") };
@@ -594,8 +597,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.ascii \"FAILED\\n\\004\"")?;
 
     writeln!(asm_file, "")?;
-    writeln!(asm_file, "\t.balign 128")?;
-    writeln!(asm_file, "vector_table:")?;
+    writeln!(ld_file, ".vector_table 0x0000000010310000 : {{ *(vector_table) }}")?;
+    writeln!(asm_file, ".section vector_table, #alloc, #execinstr")?;
     writeln!(asm_file, "\tb comparison_fail")?;
     writeln!(asm_file, "\t.balign 128")?;
     writeln!(asm_file, "\tb comparison_fail")?;
