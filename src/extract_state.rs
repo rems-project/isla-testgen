@@ -86,7 +86,17 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
     match val {
         Val::Symbolic(var) => match model.get_var(*var)? {
             Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
-            Some(Exp::Bits(bits)) => Ok(Some(GroundVal::Bits(bits_to_bv(&bits)))),
+            Some(Exp::Bits(bits)) => {
+                if bits.len() > 129 {
+                    // TODO: a less hacky way of coping with this...
+                    // If a read was more than 129 bits then it was a dummy read by the ASL
+                    // exclusives modelling to enforce address range constraints and we don't
+                    // need to actually handle it
+                    Ok(None)
+                } else {
+                    Ok(Some(GroundVal::Bits(bits_to_bv(&bits))))
+                }
+            }
             Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
             None => Ok(None),
             Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),

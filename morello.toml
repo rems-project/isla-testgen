@@ -110,6 +110,8 @@ ignore = [
 # to avoid a branch to decide whether to clear it in stores.  May need
 # proper handling if we support exclusives in future.
 "__exclusive_block_address" = "0x123456789abc"
+"__exclusive_block_address_definitely_set" = false
+"__exclusive_block_address_definitely_clear" = false
 
 # A map from register names that may appear in litmus files to Sail
 # register names
