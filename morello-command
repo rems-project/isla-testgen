@@ -4,19 +4,23 @@
 # exclusive instructions not supported without memory setup
 # ldct and stct not supported without memory setup
 # eret needs more registers set
+
+#  --exclude memory/ordered-rcpc --exclude lda_stl --exclude memory/exclusive --exclude memory/atomicops \
+#  --exclude '^CAS' --exclude '^LDAP?RB?' --exclude '^LDA?X[PR]' --exclude '^STLRB?' --exclude '^STL?X[PR]' --exclude '^SWP' \
+#  --exclude '^LDCT' --exclude '^STCT' \
+
+export RUST_BACKTRACE=1
+
 /usr/bin/time -v \
 target/release/isla-testgen -a morello -T 1 -C morello.toml -A ../arm-morello-dropzone/ir/morello.ir \
   -t ../arm-morello-dropzone/2020-09-02_asl_morello/v8a64.tag -t ../arm-morello-dropzone/2020-09-02_asl_morello/siris.tag \
   --max-retries 20 -k Halt -k AArch64_TakeException -k AArch64_DataAbort -k __SleepRequest -k ConstrainUnpredictable \
   --exclude /pac/  --exclude /vector/ --exclude /float/ --exclude /pointer/mc --exclude /tags/mc \
-  --exclude memory/ordered-rcpc --exclude lda_stl --exclude memory/exclusive --exclude memory/atomicops \
   --exclude integer/crc \
   --exclude '^bl?ra:' \
   --exclude '^e?reta:' --exclude '^eret:' --exclude '^wf[ei]:' --exclude '^m(sr|rs)' --exclude '^sys' \
-  --exclude '^CAS' --exclude '^LDAP?RB?' --exclude '^LDA?X[PR]' --exclude '^STLRB?' --exclude '^STL?X[PR]' --exclude '^SWP' \
-  --exclude '^LDCT' --exclude '^STCT' \
   --exclude 'system/hints' \
    -L AddWithCarry -L CapGetExponent -L CapGetBottom -L CapGetTop -L CapIsExponentOutOfRange \
    -L CapIsRangeInBounds -L fdiv_int -L Bit -L Bits -L CapGetBounds -L CapSetBounds -L CapIsRepresentableFast \
    _ \
-     _ _ _ _ _ _ _ _ _ -n 50 -o $OUT/test 2>&1 | tee $OUT/log
+     _ _ _ _ _ _ _ _ _ -n 25 -o $OUT/test-$SET- 2>&1 | tee $OUT/log-$SET
