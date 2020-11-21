@@ -195,6 +195,34 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver, Some(&tag_exp));
         solver.add(Def::Assert(address_constraint));
     }
+
+    fn symbolic_write_tag(
+        &mut self,
+        regions: &[isla_lib::memory::Region<B>],
+        solver: &mut Solver<B>,
+        _value: Sym,
+        _write_kind: &Val<B>,
+        address: &Val<B>,
+        tag: &Val<B>,
+    ) {
+        use isla_lib::primop::smt_value;
+        use isla_lib::smt::smtlib::{Def, Exp};
+
+        let addr_exp =
+            smt_value(address).unwrap_or_else(|err| panic!("Bad write address value {:?}: {}", address, err));
+        let tag_exp =
+            smt_value(tag).unwrap_or_else(|err| panic!("Bad memory tag write value {:?}: {}", tag, err));
+        let tag_mem_exp =
+            Exp::Store(Box::new(Exp::Var(self.tag_memory_var)), Box::new(addr_exp.clone()), Box::new(tag_exp.clone()));
+        self.tag_memory_var = solver.fresh();
+        solver.add(Def::DefineConst(self.tag_memory_var, tag_mem_exp));
+
+        let kind = SmtKind::WriteData;
+        // Only insist on the start address being in range, leave the size and alignment to the
+        // model
+        let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, 1, kind, solver, Some(&tag_exp));
+        solver.add(Def::Assert(address_constraint));
+    }
 }
 
 fn postprocess<'ir, B: BV, T: Target>(

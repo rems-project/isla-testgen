@@ -426,6 +426,26 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     }
                 }
             }
+            Event::WriteMemTag { value: _, write_kind: _, address, tag } => {
+                let address = match get_model_val(&mut model, address)? {
+                    Some(GroundVal::Bits(bs)) => bs,
+                    Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),
+                    None => panic!("Arbitrary memory write address"),
+                };
+                let address: u64 = address.try_into()?;
+                let tag_val = get_model_val(&mut model, tag)?;
+                match tag_val {
+                    Some(GroundVal::Bits(val)) => {
+                        let tag = !val.is_zero();
+                        current_tag_memory.insert(address, Some(tag));
+                    }
+                    Some(GroundVal::Bool(_)) => panic!("Tag memory write has wrong type (bool)"),
+                    None => {
+                        println!("Ambivalent tag write to {:x}", address);
+                        current_tag_memory.insert(address, None);
+                    }
+                }
+            }
             Event::ReadReg(reg, accessors, value) => {
                 let mut process_read_bits =
                     |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, skipped: &mut HashSet<_>| {
