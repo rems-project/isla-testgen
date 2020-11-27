@@ -123,7 +123,7 @@ impl Field {
             use rand::Rng;
             let mut rng = rand::thread_rng();
             let r = if rand::random() {
-                *[0, 1, 2, 30, 31].choose(&mut rng).unwrap()
+                *[0, 1, 29, 30, 31].choose(&mut rng).unwrap()
             } else {
                 rng.gen_range(0, 32)
             };
