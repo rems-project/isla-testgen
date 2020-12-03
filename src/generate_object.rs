@@ -234,6 +234,109 @@ fn get_system_registers<B: BV, T: Target>(
         .collect()
 }
 
+pub fn write_main_memory<B: BV>(
+    asm_file: &mut File,
+    ld_file: &mut File,
+    pre_post_states: &PrePostStates<B>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut name = 0;
+    for (region, contents) in pre_post_states.pre_memory.iter() {
+        writeln!(ld_file, ".data{0} {1:#010x} : {{ *(data{0}) }}", name, region.start)?;
+        writeln!(asm_file, ".section data{}, #alloc, #write", name)?;
+        write_bytes(asm_file, contents)?;
+        name += 1;
+    }
+    writeln!(ld_file, ".data {:#010x} : {{ *(data) }}", 0x00100000u64)?; /* TODO: parametrise */
+    name = 0;
+    for (_region, contents) in pre_post_states.post_memory.iter() {
+        writeln!(asm_file, ".data")?;
+        writeln!(asm_file, "check_data{}:", name)?;
+        write_bytes(asm_file, contents)?;
+        name += 1;
+    }
+    Ok(())
+}
+
+pub fn write_capability_data<B: BV>(
+    asm_file: &mut File,
+    gprs: &[(u32, B)],
+    post_gprs: &[(u32, B)],
+    system_registers: &[(String, B)],
+    pre_post_states: &PrePostStates<B>,
+    system_cap_map: &HashMap<String, SystemRegister>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut extra_tags = vec![];
+    writeln!(asm_file, ".data")?;
+    writeln!(asm_file, ".balign 16")?;
+    writeln!(asm_file, "initial_cap_values:")?;
+    for (i, (reg, value)) in gprs.iter().enumerate() {
+        let value_except_tag = value.slice(0, 128).unwrap();
+        writeln!(asm_file, "\t/* C{} */", reg)?;
+        writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        if !value.slice(128, 1).unwrap().is_zero() {
+            extra_tags.push(format!("initial_cap_values + {}", i * 16));
+        }
+    }
+    writeln!(asm_file, "final_cap_values:")?;
+    for (i, (reg, value)) in post_gprs.iter().enumerate() {
+        let value_except_tag = value.slice(0, 128).unwrap();
+        writeln!(asm_file, "\t/* C{} */", reg)?;
+        writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        if !value.slice(128, 1).unwrap().is_zero() {
+            extra_tags.push(format!("final_cap_values + {}", i * 16));
+        }
+    }
+    for (reg, value) in system_registers {
+        if reg == "SP_EL3" || system_cap_map.contains_key(reg) {
+            let value_except_tag = value.slice(0, 128).unwrap();
+            writeln!(asm_file, "initial_{}_value:", reg)?;
+            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            if !value.slice(128, 1).unwrap().is_zero() {
+                extra_tags.push(format!("initial_{}_value", reg));
+            }
+        }
+    }
+    if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
+        let mut value_except_tag = value.slice(0, 128).unwrap();
+        if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+            if !bs.is_zero() {
+                value_except_tag = value_except_tag.add_i128(1);
+            }
+        }
+        writeln!(asm_file, "pcc_return_ddc_capabilities:")?;
+        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
+        writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
+        writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        writeln!(asm_file, "\t.dword finish")?;
+        writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
+        if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
+            let value_except_tag = value.slice(0, 128).unwrap();
+            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            if !value.slice(128, 1).unwrap().is_zero() {
+                extra_tags.push(String::from("pcc_return_ddc_capabilities + 48"));
+            }
+        }
+    }
+    
+    writeln!(asm_file, ".balign 8")?;
+    writeln!(asm_file, "initial_tag_locations:")?;
+    writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
+    writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities + 16")?;
+    writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities + 32")?;
+    for (region, tags) in pre_post_states.pre_tag_memory.iter() {
+        for (i, tag) in tags.iter().enumerate() {
+            if *tag {
+                writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
+            }
+        }
+        }
+    for address in extra_tags {
+        writeln!(asm_file, "\t.dword {}", address)?;
+    }
+    writeln!(asm_file, "\t.dword 0")?;
+    Ok(())
+}
+
 pub fn make_asm_files<B: BV, T: Target>(
     target: &T,
     base_name: &str,
@@ -252,99 +355,11 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     writeln!(ld_file, "SECTIONS {{")?;
 
-    let mut name = 0;
-    for (region, contents) in pre_post_states.pre_memory.iter() {
-        writeln!(ld_file, ".data{0} {1:#010x} : {{ *(data{0}) }}", name, region.start)?;
-        writeln!(asm_file, ".section data{}, #alloc, #write", name)?;
-        write_bytes(&mut asm_file, contents)?;
-        name += 1;
-    }
-    writeln!(ld_file, ".data {:#010x} : {{ *(data) }}", 0x00100000u64)?; /* TODO: parametrise */
-    name = 0;
-    for (_region, contents) in pre_post_states.post_memory.iter() {
-        writeln!(asm_file, ".data")?;
-        writeln!(asm_file, "check_data{}:", name)?;
-        write_bytes(&mut asm_file, contents)?;
-        name += 1;
-    }
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
     let post_gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers);
     let system_registers = get_system_registers(target, &pre_post_states.pre_registers);
-    let mut cap_has_ddc = false;
-    if target.has_capabilities() {
-        let mut extra_tags = vec![];
-        writeln!(asm_file, ".data")?;
-        writeln!(asm_file, ".balign 16")?;
-        writeln!(asm_file, "initial_cap_values:")?;
-        for (i, (reg, value)) in gprs.iter().enumerate() {
-            let value_except_tag = value.slice(0, 128).unwrap();
-            writeln!(asm_file, "\t/* C{} */", reg)?;
-            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
-            if !value.slice(128, 1).unwrap().is_zero() {
-                extra_tags.push(format!("initial_cap_values + {}", i * 16));
-            }
-        }
-        writeln!(asm_file, "final_cap_values:")?;
-        for (i, (reg, value)) in post_gprs.iter().enumerate() {
-            let value_except_tag = value.slice(0, 128).unwrap();
-            writeln!(asm_file, "\t/* C{} */", reg)?;
-            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
-            if !value.slice(128, 1).unwrap().is_zero() {
-                extra_tags.push(format!("final_cap_values + {}", i * 16));
-            }
-        }
-        for (reg, value) in &system_registers {
-            if reg == "SP_EL3" || system_cap_map.contains_key(reg) {
-                let value_except_tag = value.slice(0, 128).unwrap();
-                writeln!(asm_file, "initial_{}_value:", reg)?;
-                writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
-                if !value.slice(128, 1).unwrap().is_zero() {
-                    extra_tags.push(format!("initial_{}_value", reg));
-                }
-            }
-        }
-        if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
-            let mut value_except_tag = value.slice(0, 128).unwrap();
-            if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
-                if !bs.is_zero() {
-                    value_except_tag = value_except_tag.add_i128(1);
-                }
-            }
-            writeln!(asm_file, "pcc_return_ddc_capabilities:")?;
-            writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
-            writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
-            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
-            writeln!(asm_file, "\t.dword finish")?;
-            writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
-            if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
-                cap_has_ddc = true;
-                let value_except_tag = value.slice(0, 128).unwrap();
-                writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
-                if !value.slice(128, 1).unwrap().is_zero() {
-                    extra_tags.push(String::from("pcc_return_ddc_capabilities + 48"));
-                }
-            }
-        }
 
-        writeln!(asm_file, ".balign 8")?;
-        writeln!(asm_file, "initial_tag_locations:")?;
-        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
-        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities + 16")?;
-        writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities + 32")?;
-        for (region, tags) in pre_post_states.pre_tag_memory.iter() {
-            for (i, tag) in tags.iter().enumerate() {
-                if *tag {
-                    writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
-                }
-            }
-        }
-        for address in extra_tags {
-            writeln!(asm_file, "\t.dword {}", address)?;
-        }
-        writeln!(asm_file, "\t.dword 0")?;
-    }
-
-    name = 0;
+    let mut name = 0;
     for (region, contents) in pre_post_states.code.iter() {
         writeln!(ld_file, ".text{0} {1:#010x} : {{ *(text{0}) }}", name, region.start)?;
         writeln!(asm_file, ".section text{}, #alloc, #execinstr", name)?;
@@ -428,8 +443,8 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tisb")?;
 
         writeln!(asm_file, "\t/* Write general purpose registers */")?;
-        for (reg, value) in gprs {
-            writeln!(asm_file, "\tldr x{}, ={:#x}", reg, value.lower_u64())?;
+        for (reg, value) in &gprs {
+            writeln!(asm_file, "\tldr x{}, ={:#x}", *reg, value.lower_u64())?;
         }
     }
 
@@ -448,8 +463,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t/* Set up flags and system registers */")?;
     writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
     writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
-    for (reg, value) in system_registers {
-        if reg == "SP_EL3" {
+    for (reg, value) in &system_registers {
+        if *reg == "SP_EL3" {
             if target.has_capabilities() {
                 writeln!(asm_file, "\tldr x{}, =initial_SP_EL3_value", entry_reg)?;
                 write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
@@ -458,18 +473,18 @@ pub fn make_asm_files<B: BV, T: Target>(
                 writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
                 writeln!(asm_file, "\tmov sp, x{}", entry_reg)?;
             }
-        } else if let Some(operand) = system_cap_map.get(&reg) {
+        } else if let Some(operand) = system_cap_map.get(reg) {
             writeln!(asm_file, "\tldr x{}, =initial_{}_value", entry_reg, reg)?;
             write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
             write_msr_cap(&mut asm_file, operand, entry_reg)?;
-        } else if reg != "DDC_EL3" {
+        } else if *reg != "DDC_EL3" {
             let mut value = value.lower_u64();
             // Ensure MMU is on for Morello even if we didn't use it in symbolic execution
             if reg == "SCTLR_EL3" && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
             writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value)?;
             // Avoid requirement for Morello assembler
             let (name, comment) =
-                if reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") } else { (reg.as_str(), "") };
+                if *reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") } else { (reg.as_str(), "") };
             writeln!(asm_file, "\tmsr {}, x{}{}", name, entry_reg, comment)?;
         }
     }
@@ -479,7 +494,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     if target.has_capabilities() {
         writeln!(asm_file, "\tldr x{}, =pcc_return_ddc_capabilities", exit_reg)?;
         write_ldr_off(&mut asm_file, exit_reg, exit_reg, 0)?;
-        if cap_has_ddc {
+        if let Some(GroundVal::Bits(_value)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
             write_aldr_off(&mut asm_file, entry_reg, exit_reg, 3)?;
             write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
             writeln!(asm_file, "\tisb")?;
@@ -595,6 +610,14 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.ascii \"OK\\n\\004\"")?;
     writeln!(asm_file, "fail_message:")?;
     writeln!(asm_file, "\t.ascii \"FAILED\\n\\004\"")?;
+
+    writeln!(asm_file, "")?;
+    write_main_memory(&mut asm_file, &mut ld_file, &pre_post_states)?;
+
+    if target.has_capabilities() {
+    writeln!(asm_file, "")?;
+        write_capability_data(&mut asm_file, &gprs, &post_gprs, &system_registers, &pre_post_states, &system_cap_map)?;
+    }
 
     writeln!(asm_file, "")?;
     writeln!(ld_file, ".vector_table 0x0000000010310000 : {{ *(vector_table) }}")?;
