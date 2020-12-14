@@ -141,9 +141,17 @@ fn write_msr_cap(asm_file: &mut File, (reg, op0, op1, crn, crm, op2): &SystemReg
 }
 
 const REG_CVBAR_EL3: SystemRegister = ("CVBAR_EL3", 0b11, 0b110, 0b1100, 0b0000, 0b000);
+const REG_CVBAR_EL1: SystemRegister = ("CVBAR_EL1", 0b11, 0b000, 0b1100, 0b0000, 0b000);
+const REG_CELR_EL3 : SystemRegister = ("CELR_EL3",  0b11, 0b110, 0b0100, 0b0000, 0b001);
+const REG_DDC_EL0  : SystemRegister = ("DDC_EL0",   0b11, 0b000, 0b0100, 0b0001, 0b001);
+const REG_DDC_EL1  : SystemRegister = ("DDC_EL1",   0b11, 0b100, 0b0100, 0b0001, 0b001);
+const REG_DDC_EL2  : SystemRegister = ("DDC_EL2",   0b11, 0b110, 0b0100, 0b0001, 0b001);
 const REG_DDC_EL3  : SystemRegister = ("DDC_EL3",   0b11, 0b011, 0b0100, 0b0001, 0b001);
 const REG_RDDC_EL0 : SystemRegister = ("RDDC_EL0",  0b11, 0b011, 0b0100, 0b0011, 0b001);
 const REG_RCSP_EL0 : SystemRegister = ("RSP_EL0",   0b11, 0b111, 0b0100, 0b0001, 0b011);
+const REG_CSP_EL0  : SystemRegister = ("CSP_EL0",   0b11, 0b000, 0b0100, 0b0001, 0b000);
+const REG_CSP_EL1  : SystemRegister = ("CSP_EL1",   0b11, 0b100, 0b0100, 0b0001, 0b000);
+const REG_CSP_EL2  : SystemRegister = ("CSP_EL2",   0b11, 0b110, 0b0100, 0b0001, 0b000);
 
 fn write_chkeq(asm_file: &mut File, cn: u32, cm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0b11_000010110_00000_1_0_1_001_00000_0_0_0_01 | cm << 16 | cn << 5;
@@ -257,7 +265,8 @@ pub fn write_main_memory<B: BV>(
     Ok(())
 }
 
-pub fn write_capability_data<B: BV>(
+pub fn write_capability_data<B: BV, T: Target>(
+    target: &T,
     asm_file: &mut File,
     gprs: &[(u32, B)],
     post_gprs: &[(u32, B)],
@@ -299,7 +308,7 @@ pub fn write_capability_data<B: BV>(
     if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
         let mut value_except_tag = value.slice(0, 128).unwrap();
         if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
-            if !bs.is_zero() {
+            if !bs.is_zero() && !target.run_in_el0() {
                 value_except_tag = value_except_tag.add_i128(1);
             }
         }
@@ -351,7 +360,14 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     let mut system_cap_map: HashMap<String, SystemRegister> = HashMap::new();
     system_cap_map.insert("RDDC_EL0".to_string(), REG_RDDC_EL0);
+    system_cap_map.insert("DDC_EL0".to_string(), REG_DDC_EL0);
+    system_cap_map.insert("DDC_EL1".to_string(), REG_DDC_EL1);
+    system_cap_map.insert("DDC_EL2".to_string(), REG_DDC_EL2);
+    // DDC_EL3 is treated as a special case
     system_cap_map.insert("RSP_EL0".to_string(), REG_RCSP_EL0);
+    system_cap_map.insert("SP_EL0".to_string(), REG_CSP_EL0);
+    system_cap_map.insert("SP_EL1".to_string(), REG_CSP_EL1);
+    system_cap_map.insert("SP_EL2".to_string(), REG_CSP_EL2);
 
     writeln!(ld_file, "SECTIONS {{")?;
 
@@ -405,19 +421,40 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tldr x0, =vector_table")?;
         write_cvtp(&mut asm_file, 1, 0)?;
         write_scvalue(&mut asm_file, 1, 1, 0)?;
-        write_msr_cap(&mut asm_file, &REG_CVBAR_EL3, 1)?; 
+        write_msr_cap(&mut asm_file, &REG_CVBAR_EL3, 1)?;
+	if target.run_in_el0() {
+            writeln!(asm_file, "\tldr x0, =vector_table_el1 + 0x40000000")?;
+            write_cvtp(&mut asm_file, 1, 0)?;
+            write_scvalue(&mut asm_file, 1, 1, 0)?;
+            write_msr_cap(&mut asm_file, &REG_CVBAR_EL1, 1)?;
+	}
         writeln!(asm_file, "\tisb")?;
 
         writeln!(asm_file, "\t/* Set up translation */")?;
         writeln!(asm_file, "\tldr x0, =tt_l1_base")?;
         writeln!(asm_file, "\tmsr ttbr0_el3, x0")?;
+	if target.run_in_el0() {
+            writeln!(asm_file, "\tmsr ttbr0_el1, x0")?;
+	}
         writeln!(asm_file, "\tmov x0, #0xff")?;
         writeln!(asm_file, "\tmsr mair_el3, x0")?;
-        writeln!(asm_file, "\tldr x0, =0x0d001519")?;
+	if target.run_in_el0() {
+            writeln!(asm_file, "\tmsr mair_el1, x0")?;
+	}
+        writeln!(asm_file, "\tldr x0, =0x0d003519")?;
         writeln!(asm_file, "\tmsr tcr_el3, x0")?;
+	if target.run_in_el0() {
+            writeln!(asm_file, "\tldr x0, =0x0000320000803519 // No cap effects, inner shareable, normal, outer write-back read-allocate write-allocate cacheable")?;
+            writeln!(asm_file, "\tmsr tcr_el1, x0")?;
+	}
         writeln!(asm_file, "\tisb")?;
         writeln!(asm_file, "\ttlbi alle3")?;
+	if target.run_in_el0() {
+            writeln!(asm_file, "\ttlbi alle1")?;
+	}
         writeln!(asm_file, "\tdsb sy")?;
+	writeln!(asm_file, "\tldr x0, =0x30851035")?;
+	writeln!(asm_file, "\tmsr sctlr_el3, x0")?;
         writeln!(asm_file, "\tisb")?;
 
         writeln!(asm_file, "\t/* Write tags to memory */")?;
@@ -461,8 +498,19 @@ pub fn make_asm_files<B: BV, T: Target>(
     }
 
     writeln!(asm_file, "\t/* Set up flags and system registers */")?;
-    writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
-    writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
+    if target.run_in_el0() {
+	let c64: u64 =
+	    if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+		if !bs.is_zero() { 1 << 26 } else { 0 }
+	    } else {
+		0
+	    };
+	writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, (flags.pre_nzcv << 28) as u64 | c64)?;
+	writeln!(asm_file, "\tmsr SPSR_EL3, x{}", entry_reg)?;
+    } else {
+	writeln!(asm_file, "\tmov x{}, #{:#010x}", entry_reg, flags.pre_nzcv << 28)?;
+	writeln!(asm_file, "\tmsr nzcv, x{}", entry_reg)?;
+    }
     for (reg, value) in &system_registers {
         if *reg == "SP_EL3" {
             if target.has_capabilities() {
@@ -480,11 +528,15 @@ pub fn make_asm_files<B: BV, T: Target>(
         } else if *reg != "DDC_EL3" {
             let mut value = value.lower_u64();
             // Ensure MMU is on for Morello even if we didn't use it in symbolic execution
-            if reg == "SCTLR_EL3" && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
+            if (reg == "SCTLR_EL3" || reg == "SCTLR_EL1") && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
             writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value)?;
             // Avoid requirement for Morello assembler
             let (name, comment) =
-                if *reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") } else { (reg.as_str(), "") };
+                if *reg == "CCTLR_EL3" { ("S3_6_C1_C2_2", " // CCTLR_EL3") }
+	        else if  *reg == "CCTLR_EL2" { ("S3_4_C1_C2_2", " // CCTLR_EL2") }
+	        else if  *reg == "CCTLR_EL1" { ("S3_0_C1_C2_2", " // CCTLR_EL1") }
+	        else if  *reg == "CCTLR_EL0" { ("S3_3_C1_C2_2", " // CCTLR_EL0") }
+	        else { (reg.as_str(), "") };
             writeln!(asm_file, "\tmsr {}, x{}{}", name, entry_reg, comment)?;
         }
     }
@@ -501,7 +553,12 @@ pub fn make_asm_files<B: BV, T: Target>(
         }
         write_aldr_off(&mut asm_file, entry_reg, exit_reg, 1)?;
         write_aldr_off(&mut asm_file, exit_reg, exit_reg, 2)?;
-        write_br(&mut asm_file, entry_reg)?;
+	if target.run_in_el0() {
+	    write_msr_cap(&mut asm_file, &REG_CELR_EL3, entry_reg)?;
+	    writeln!(asm_file, "\t eret")?;
+	} else {
+            write_br(&mut asm_file, entry_reg)?;
+	}
     } else {
         writeln!(asm_file, "\tldr x{}, =test_start", entry_reg)?;
         writeln!(asm_file, "\tldr x{}, =finish", exit_reg)?;
@@ -526,7 +583,11 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\t/* No processor flags to check */")?;
     } else {
         writeln!(asm_file, "\t/* Check processor flags */")?;
-        writeln!(asm_file, "\tmrs x{}, nzcv", entry_reg)?;
+	if target.run_in_el0() {
+	    writeln!(asm_file, "\tmrs x{}, SPSR_EL3", entry_reg)?;
+	} else {
+            writeln!(asm_file, "\tmrs x{}, nzcv", entry_reg)?;
+	}
         writeln!(asm_file, "\tubfx x{0}, x{0}, #28, #4", entry_reg)?;
         writeln!(asm_file, "\tmov x{}, #{:#03x}", exit_reg, flags.post_nzcv_mask)?;
         writeln!(asm_file, "\tand x{0}, x{0}, x{1}", entry_reg, exit_reg)?;
@@ -616,7 +677,7 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     if target.has_capabilities() {
     writeln!(asm_file, "")?;
-        write_capability_data(&mut asm_file, &gprs, &post_gprs, &system_registers, &pre_post_states, &system_cap_map)?;
+        write_capability_data(target, &mut asm_file, &gprs, &post_gprs, &system_registers, &pre_post_states, &system_cap_map)?;
     }
 
     writeln!(asm_file, "")?;
@@ -638,7 +699,11 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.balign 128")?;
     writeln!(asm_file, "\tb comparison_fail")?;
     writeln!(asm_file, "\t.balign 128")?;
-    writeln!(asm_file, "\tb comparison_fail")?;
+    if target.run_in_el0() {
+	writeln!(asm_file, "\tb finish")?;
+    } else {
+	writeln!(asm_file, "\tb comparison_fail")?;
+    }
     writeln!(asm_file, "\t.balign 128")?;
     writeln!(asm_file, "\tb comparison_fail")?;
     writeln!(asm_file, "\t.balign 128")?;
@@ -654,14 +719,52 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.balign 128")?;
     writeln!(asm_file, "\tb comparison_fail")?;
 
+    if target.run_in_el0() {
+	writeln!(asm_file, "")?;
+	writeln!(ld_file, ".vector_table_el1 0x0000000010320000 : {{ *(vector_table_el1) }}")?;
+	writeln!(asm_file, ".section vector_table_el1, #alloc, #execinstr")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+	writeln!(asm_file, "\t.balign 128")?;
+	writeln!(asm_file, "\tsmc 0")?;
+    }
+    
     writeln!(asm_file, "")?;
-    writeln!(asm_file, "\t/* Translation table, single entry, capabilities allowed */")?;
+    writeln!(asm_file, "\t/* Translation table, two entries for the bottom GB, capabilities allowed */")?;
     writeln!(ld_file, ".text_tt 0x0000000010400000 : {{ *(text_tt) }}")?;
     writeln!(asm_file, ".section text_tt, #alloc, #execinstr")?;
     writeln!(asm_file, "\t.align 12")?;
     writeln!(asm_file, "\t.global tt_l1_base")?;
     writeln!(asm_file, "tt_l1_base:")?;
-    writeln!(asm_file, "\t.dword 0x3000000000000701")?;
+    writeln!(asm_file, "\t.dword 0x3000000000000741")?;
+    writeln!(asm_file, "\t.dword 0x3000000000000701 // No write permission so that EL1 can execute")?;
     writeln!(asm_file, "\t.fill 4088, 1, 0")?;
 
     writeln!(ld_file, "}}")?;

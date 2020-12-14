@@ -134,7 +134,7 @@ fn instruction_opcode<B: BV>(
 fn isla_main() -> i32 {
     let mut opts = opts::common_opts();
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
-    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64");
+    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64/morello-el3");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("o", "output", "base name for output files", "<file>");
@@ -155,6 +155,8 @@ fn isla_main() -> i32 {
 
     let translation_in_symbolic_execution = matches.opt_present("translation-in-symbolic-execution");
 
+    use crate::target::MorelloStyle::*;
+
     match matches.opt_str("target-arch").as_deref().unwrap_or("aarch64") {
         "aarch64" => {
             if translation_in_symbolic_execution {
@@ -164,8 +166,9 @@ fn isla_main() -> i32 {
                 testgen_main(target::Aarch64 {}, hasher, opts, matches, arch)
             }
         }
-        "morello" => testgen_main(target::Morello { aarch64_compatible: false, translation_in_symbolic_execution }, hasher, opts, matches, arch),
-        "morello-aarch64" => testgen_main(target::Morello { aarch64_compatible: true, translation_in_symbolic_execution }, hasher, opts, matches, arch),
+        "morello" => testgen_main(target::Morello { style: EL0, translation_in_symbolic_execution }, hasher, opts, matches, arch),
+        "morello-el3" => testgen_main(target::Morello { style: EL3Only, translation_in_symbolic_execution }, hasher, opts, matches, arch),
+        "morello-aarch64" => testgen_main(target::Morello { style: AArch64Compatible, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1
