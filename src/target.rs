@@ -182,6 +182,7 @@ impl Target for Morello {
             sys_regs.push(("CCTLR_EL1".to_string(), vec![]));
             sys_regs.push(("CCTLR_EL0".to_string(), vec![]));
             sys_regs.push(("DDC_EL0".to_string(), vec![]));
+	    sys_regs.push(("VBAR_EL1".to_string(), vec![]));
 	}
         regs.append(&mut vector_regs);
         regs.append(&mut other_regs);
@@ -328,6 +329,12 @@ impl Target for Morello {
                     Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(1, 1)))));
             }
+	    if reg == "VBAR_EL1" {
+		// Set the location of the EL1 vector table
+		solver.add(Def::Assert(Exp::Eq(
+		    Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(v)))),
+		    Box::new(Exp::Bits64(0x0000000010320000, 64)))));
+	    }
         }
     }
     fn postprocess<'ir, B: BV>(&self,
