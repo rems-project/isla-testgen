@@ -42,6 +42,7 @@ where
     fn has_capabilities(&self) -> bool;
     fn run_in_el0(&self) -> bool;
     fn final_instruction(&self, exit_register: u32) -> u32;
+    fn exception_handle<B: BV>(&self, address: B) -> Option<B>;
 }
 
 pub struct Aarch64 {}
@@ -102,6 +103,9 @@ impl Target for Aarch64 {
     }
     fn final_instruction(&self, exit_register: u32) -> u32 {
         0xd61f0000 | (exit_register << 5) // br exit_register
+    }
+    fn exception_handle<B: BV>(&self, _address: B) -> Option<B> {
+	None
     }
 }
 
@@ -330,10 +334,11 @@ impl Target for Morello {
                     Box::new(Exp::Bits64(1, 1)))));
             }
 	    if reg == "VBAR_EL1" {
+		// TODO: ensure cap permissions
 		// Set the location of the EL1 vector table
 		solver.add(Def::Assert(Exp::Eq(
 		    Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(v)))),
-		    Box::new(Exp::Bits64(0x0000000010320000, 64)))));
+		    Box::new(Exp::Bits64(0x0000000050320000, 64)))));
 	    }
         }
     }
@@ -377,5 +382,18 @@ impl Target for Morello {
             EL3Only => 0b11_0000101100_00100_0_0_100_00000_0_0_0_00 | (exit_register << 5), // br exit_capability
 	    EL0 => 0xd4000001, // SVC 0
         }
+    }
+    fn exception_handle<B: BV>(&self, address: B) -> Option<B> {
+	if self.run_in_el0() {
+	    // TODO: move address to common position
+	    if address.unsigned() & !0x780 == 0x0000000050320000 {
+		// TODO: use conf for address
+		Some(B::new(0x400300, 64))
+	    } else {
+		None
+	    }
+	} else {
+	    None
+	}
     }
 }

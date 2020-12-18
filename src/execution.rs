@@ -225,33 +225,95 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
     }
 }
 
+enum PCResolved<B: BV> {
+    SymbolicPC(Sym),
+    ConcretePC(B),
+}
+
+// TODO: generalize this so that we can use it in other places where making a register
+// concrete is useful.
+fn resolve_concrete_pc<B: BV>(
+    value: &mut UVal<B>,
+    solver: &mut Solver<B>,
+) -> Result<PCResolved<B>, String> {
+    use isla_lib::smt::smtlib::Exp;
+    use PCResolved::*;
+    
+    match value {
+	UVal::Init(Val::Symbolic(v)) => {
+	    if solver.check_sat().is_unsat().map_err(|e| format!("{}", e))? {
+		return Err(String::from("Unsatisfiable in post-processing"));
+	    }
+	    let model_val = {
+		let mut model = Model::new(solver);
+		model.get_var(*v).map_err(|e| format!("{}", e))?
+	    };
+	    match model_val {
+		Some(Exp::Bits64(result, size)) => {
+		    if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result, size))))
+			.is_unsat().map_err(|e| format!("{}", e))? {
+			    let bits = B::new(result, size);
+			    // Cache the concrete value
+			    *value = UVal::Init(Val::Bits(bits));
+			    Ok(ConcretePC(bits))
+			} else {
+			    Ok(SymbolicPC(*v))
+			}
+		},
+		_ => Ok(SymbolicPC(*v))
+	    }
+	}
+	UVal::Init(Val::Bits(bits)) => Ok(ConcretePC(*bits)),
+	_ => Err(format!("Unexpected PC value: {:?}", value))
+    }
+}
+
 fn postprocess<'ir, B: BV, T: Target>(
     target: &T,
     tid: usize,
     _task_id: usize,
-    local_frame: LocalFrame<'ir, B>,
+    mut local_frame: LocalFrame<'ir, B>,
     shared_state: &SharedState<'ir, B>,
     mut solver: Solver<B>,
     _events: &Vec<Event<B>>,
 ) -> Result<(Frame<'ir, B>, Checkpoint<B>), String> {
     use isla_lib::smt::smtlib::{Def, Exp};
-
+    use PCResolved::*;
+    
     log_from!(tid, log::VERBOSE, "Postprocessing");
 
     // Ensure the new PC can be placed in memory
     // (currently this is used to prevent an exception)
     let pc_id = shared_state.symtab.lookup("z_PC");
-    let pc = local_frame.regs().get(&pc_id).unwrap();
-    let pc_exp = match pc {
-        UVal::Init(Val::Symbolic(v)) => Exp::Var(*v),
-        UVal::Init(Val::Bits(b)) => Exp::Bits64(b.lower_u64(), b.len()),
-        _ => panic!("Bad PC value {:?}", pc),
-    };
-    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver, None);
-    solver.add(Def::Assert(pc_constraint));
-    // Alignment constraint
-    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(Exp::Bits64(0,2)))));
-
+    let pc = local_frame.regs_mut().get_mut(&pc_id).unwrap();
+    match resolve_concrete_pc(pc, &mut solver)? {
+	SymbolicPC(v) => {
+	    let pc_exp = Exp::Var(v);
+	    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver, None);
+	    solver.add(Def::Assert(pc_constraint));
+	    // Alignment constraint
+	    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(Exp::Bits64(0,2)))));
+	}
+	ConcretePC(b) => {
+	    if let Ok(pc_i) = b.try_into() {
+		if local_frame.memory().access_check(pc_i, 4, SmtKind::ReadInstr) {
+		    if pc_i % 4 != 0 {
+			return Err(format!("Unaligned concrete PC: {}", pc_i))
+		    }
+		    // The target can optionally recognise an exception handler elsewhere
+		    // and tell us where it jumps to
+		} else if let Some(next_pc) = target.exception_handle(b) {
+		    let pc_val = local_frame.regs_mut().get_mut(&pc_id).unwrap();
+		    *pc_val = UVal::Init(Val::Bits(next_pc))
+		} else {
+		    return Err(format!("Concrete PC out of allowed ranges: {}", pc_i))
+		}
+	    } else {
+		return Err(format!("PC value far too large: {}", b))
+	    }
+	}
+    }
+    
     target.postprocess(shared_state, &local_frame, &mut solver)?;
 
     let result = match solver.check_sat() {
