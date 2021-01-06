@@ -471,10 +471,16 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                                 }
                                             }
                                         }
-                                        // Otherwise we read a concrete initial value, so it comes from
+                                        // Otherwise when we read a concrete initial value, so it comes from
                                         // initialisation and does not need to be set by the harness
                                         _ => {
-                                            current_registers.insert(key.clone(), (false, model_value));
+                                            let post_init =
+                                                if let Some((pi, _)) = current_registers.get(&key) {
+                                                    *pi
+                                                } else {
+                                                    false
+                                                };
+                                            current_registers.insert(key.clone(), (post_init, model_value));
                                         }
                                     }
                                 }
