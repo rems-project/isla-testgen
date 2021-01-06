@@ -42,7 +42,12 @@ where
     fn has_capabilities(&self) -> bool;
     fn run_in_el0(&self) -> bool;
     fn final_instruction(&self, exit_register: u32) -> u32;
-    fn exception_handle<B: BV>(&self, address: B) -> Option<B>;
+    fn exception_handle<'ir, B: BV>(
+        &self,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<B>,
+        solver: &mut Solver<B>,
+        address: B) -> Result<Option<B>, String>;
 }
 
 pub struct Aarch64 {}
@@ -104,8 +109,13 @@ impl Target for Aarch64 {
     fn final_instruction(&self, exit_register: u32) -> u32 {
         0xd61f0000 | (exit_register << 5) // br exit_register
     }
-    fn exception_handle<B: BV>(&self, _address: B) -> Option<B> {
-	None
+    fn exception_handle<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<B>,
+        _solver: &mut Solver<B>,
+        _address: B) -> Result<Option<B>, String> {
+	Ok(None)
     }
 }
 
@@ -384,17 +394,40 @@ impl Target for Morello {
 	    EL0 => 0xd4000001, // SVC 0
         }
     }
-    fn exception_handle<B: BV>(&self, address: B) -> Option<B> {
+    fn exception_handle<'ir, B: BV>(
+        &self,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<B>,
+        solver: &mut Solver<B>,
+        address: B) -> Result<Option<B>, String> {
 	if self.run_in_el0() {
 	    // TODO: move address to common position
 	    if address.unsigned() & !0x780 == 0x0000000050320000 {
+                use isla_lib::ir::{UVal, Val};
+                use isla_lib::smt::smtlib::{Def, Exp};
 		// TODO: use conf for address
-		Some(B::new(0x400300, 64))
+                let new_addr: u64 = 0x400300;
+                // The caller sets the PC, but we need to update the PCC too
+                let pcc_id = shared_state.symtab.lookup("zPCC");
+                let pcc = frame.regs_mut().get_mut(&pcc_id).unwrap();
+                match pcc {
+                    UVal::Init(Val::Symbolic(old_v)) => {
+                        let v = solver.fresh();
+                        solver.add(Def::DefineConst(
+                            v,
+                            Exp::Concat(
+                                Box::new(Exp::Extract(128, 64, Box::new(Exp::Var(*old_v)))),
+                                Box::new(Exp::Bits64(new_addr, 64)))));
+                    }
+                    UVal::Init(Val::Bits(old_pcc)) => *pcc = UVal::Init(Val::Bits(old_pcc.set_slice(0, B::from_u64(new_addr)))),
+                    _ => return Err(format!("Unexpected value for PCC: {:?}", pcc)),
+                }
+		Ok(Some(B::from_u64(new_addr)))
 	    } else {
-		None
+		Ok(None)
 	    }
 	} else {
-	    None
+	    Ok(None)
 	}
     }
 }

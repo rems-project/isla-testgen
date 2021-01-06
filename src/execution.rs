@@ -302,7 +302,8 @@ fn postprocess<'ir, B: BV, T: Target>(
 		    }
 		    // The target can optionally recognise an exception handler elsewhere
 		    // and tell us where it jumps to
-		} else if let Some(next_pc) = target.exception_handle(b) {
+		} else if let Some(next_pc) = target.exception_handle(shared_state, &mut local_frame, &mut solver, b)? {
+                    log_from!(tid, log::VERBOSE, format!("Processor exception handler entered, jumping to {}", next_pc));
 		    let pc_val = local_frame.regs_mut().get_mut(&pc_id).unwrap();
 		    *pc_val = UVal::Init(Val::Bits(next_pc))
 		} else {
