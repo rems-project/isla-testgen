@@ -223,14 +223,14 @@ impl Target for Morello {
 
         if self.translation_in_symbolic_execution {
             let (_, tt_base, _) = self.translation_table_info().unwrap();
-            for (reg, value, size) in
-                [("TTBR0_EL3", tt_base, 64),
-                 ("MAIR_EL3", 0xff, 64),
-                 ("TCR_EL3", 0x0d001519, 32)].iter()
+            for (reg, value) in
+                [("TTBR0_EL3", B::new(tt_base, 64)),
+                 ("MAIR_EL3", B::new(0xff, 64)),
+                 ("TCR_EL3", B::new(0x0d001519, 32))].iter()
             {
                 let id = shared_state.symtab.lookup(&zencode::encode(reg));
                 let val = local_frame.regs_mut().get_mut(&id).unwrap();
-                *val = UVal::Init(Val::Bits(B::new(*value, *size)));
+                *val = UVal::Init(Val::Bits(*value));
             }
         }
 
@@ -247,6 +247,14 @@ impl Target for Morello {
 		}
 		_ => panic!("Unexpected value for PSTATE: {:?}", pstate),
 	    }
+            for (reg, value) in
+		// Set up vector base capability to allow code in the vector table to run
+                [("VBAR_EL1", B::ones(1).append(B::from_u64(0xFFFFC00000010005)).unwrap().append(B::from_u64(0x0000000050320000)).unwrap())].iter()
+            {
+                let id = shared_state.symtab.lookup(&zencode::encode(reg));
+                let val = local_frame.regs_mut().get_mut(&id).unwrap();
+                *val = UVal::Init(Val::Bits(*value));
+            }
 	}
 	
         if self.aarch64_compatible() {
@@ -333,13 +341,6 @@ impl Target for Morello {
                     Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(1, 1)))));
             }
-	    if reg == "VBAR_EL1" {
-		// TODO: ensure cap permissions
-		// Set the location of the EL1 vector table
-		solver.add(Def::Assert(Exp::Eq(
-		    Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(v)))),
-		    Box::new(Exp::Bits64(0x0000000050320000, 64)))));
-	    }
         }
     }
     fn postprocess<'ir, B: BV>(&self,
