@@ -140,8 +140,21 @@ fn write_msr_cap(asm_file: &mut File, (reg, op0, op1, crn, crm, op2): &SystemReg
     Ok(())
 }
 
+fn write_mrs_cap(asm_file: &mut File, ct: u32, (reg, op0, op1, crn, crm, op2): &SystemRegister) -> Result<(), Box<dyn std::error::Error>> {
+    let o0 = match op0 {
+        2 => 0,
+        3 => 1,
+        _ => panic!("Bad op0 for MRS: {}", op0),
+    };
+    let v: u32 = 0b11000010100_1_0_000_0000_0000_000_00000 | o0 << 19 | op1 << 16 | crn << 12 | crm << 8 | op2 << 5 | ct;
+    writeln!(asm_file, "\t.inst {:#010x} // mrs c{}, {}", v, ct, reg)?;
+    Ok(())
+}
+
 const REG_CVBAR_EL3: SystemRegister = ("CVBAR_EL3", 0b11, 0b110, 0b1100, 0b0000, 0b000);
 const REG_CVBAR_EL1: SystemRegister = ("CVBAR_EL1", 0b11, 0b000, 0b1100, 0b0000, 0b000);
+const REG_CELR_EL1 : SystemRegister = ("CELR_EL1",  0b11, 0b000, 0b0100, 0b0000, 0b001);
+const REG_CELR_EL2 : SystemRegister = ("CELR_EL2",  0b11, 0b100, 0b0100, 0b0000, 0b001);
 const REG_CELR_EL3 : SystemRegister = ("CELR_EL3",  0b11, 0b110, 0b0100, 0b0000, 0b001);
 const REG_DDC_EL0  : SystemRegister = ("DDC_EL0",   0b11, 0b000, 0b0100, 0b0001, 0b001);
 const REG_DDC_EL1  : SystemRegister = ("DDC_EL1",   0b11, 0b100, 0b0100, 0b0001, 0b001);
@@ -221,19 +234,19 @@ fn get_vector_registers<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), Gr
 }
 
 fn get_system_registers<B: BV, T: Target>(
-    target: &T,
+    _target: &T,
+    regs: &[(String, Vec<GVAccessor<String>>)],
     state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>,
 ) -> Vec<(String, B)> {
-    target
-        .regs()
+    regs
         .iter()
         .filter_map(|(reg, acc)| {
             let zreg = zencode::encode(reg);
-            if acc.is_empty() && T::is_gpr(&zreg).is_none() && reg != "_PC" && reg != "PCC" {
+            if acc.is_empty() && T::is_gpr(&zreg).is_none() && reg != "_PC" {
                 match state.get(&(&zreg, vec![])) {
                     Some(GroundVal::Bits(bs)) => Some((reg.clone(), *bs)),
                     Some(v) => panic!("System register {} was expected to be a bitvector, found {}", reg, v),
-                    None => None,
+                    None => None
                 }
             } else {
                 None
@@ -271,6 +284,7 @@ pub fn write_capability_data<B: BV, T: Target>(
     gprs: &[(u32, B)],
     post_gprs: &[(u32, B)],
     system_registers: &[(String, B)],
+    post_system_registers: &[(String, B)],
     pre_post_states: &PrePostStates<B>,
     system_cap_map: &HashMap<String, SystemRegister>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -302,6 +316,23 @@ pub fn write_capability_data<B: BV, T: Target>(
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
             if !value.slice(128, 1).unwrap().is_zero() {
                 extra_tags.push(format!("initial_{}_value", reg));
+            }
+        }
+    }
+    for (reg, value) in post_system_registers {
+        // PCC is checked using ELR_EL1
+        let value = if reg == "PCC" {
+            assert!(target.run_in_el0());
+            value.add_i128(4)
+        } else {
+            *value
+        };
+        if reg == "SP_EL3" || reg == "PCC" || system_cap_map.contains_key(reg) {
+            let value_except_tag = value.slice(0, 128).unwrap();
+            writeln!(asm_file, "final_{}_value:", reg)?;
+            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            if !value.slice(128, 1).unwrap().is_zero() {
+                extra_tags.push(format!("final_{}_value", reg));
             }
         }
     }
@@ -359,6 +390,9 @@ pub fn make_asm_files<B: BV, T: Target>(
     let mut ld_file = File::create(&format!("{}.ld", base_name))?;
 
     let mut system_cap_map: HashMap<String, SystemRegister> = HashMap::new();
+    system_cap_map.insert("ELR_EL1".to_string(), REG_CELR_EL1);
+    system_cap_map.insert("ELR_EL2".to_string(), REG_CELR_EL2);
+    system_cap_map.insert("ELR_EL3".to_string(), REG_CELR_EL3);
     system_cap_map.insert("RDDC_EL0".to_string(), REG_RDDC_EL0);
     system_cap_map.insert("DDC_EL0".to_string(), REG_DDC_EL0);
     system_cap_map.insert("DDC_EL1".to_string(), REG_DDC_EL1);
@@ -373,7 +407,8 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
     let post_gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers);
-    let system_registers = get_system_registers(target, &pre_post_states.pre_registers);
+    let system_registers = get_system_registers(target, &target.regs(), &pre_post_states.pre_registers);
+    let post_system_registers = get_system_registers(target, &target.post_regs(), &pre_post_states.post_registers);
 
     let mut name = 0;
     for (region, contents) in pre_post_states.code.iter() {
@@ -525,7 +560,7 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tldr x{}, =initial_{}_value", entry_reg, reg)?;
             write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
             write_msr_cap(&mut asm_file, operand, entry_reg)?;
-        } else if *reg != "DDC_EL3" {
+        } else if *reg != "DDC_EL3" && *reg != "PCC" {
             let mut value = value.lower_u64();
             // Ensure MMU is on for Morello even if we didn't use it in symbolic execution
             if (reg == "SCTLR_EL3" || reg == "SCTLR_EL1") && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
@@ -623,6 +658,29 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tb.ne comparison_fail")?;
         }
     }
+    if !post_system_registers.is_empty() {
+        writeln!(asm_file, "\t/* Check system registers */")?;
+        for (reg, value) in &post_system_registers {
+            let actual_reg = if reg == "PCC" {
+                assert!(target.run_in_el0());
+                "ELR_EL1"
+            } else {
+                reg
+            };
+            if let Some(operand) = system_cap_map.get(actual_reg) {
+                writeln!(asm_file, "\tldr x{}, =final_{}_value", entry_reg, reg)?;
+                write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+                write_mrs_cap(&mut asm_file, exit_reg, operand)?;
+                write_chkeq(&mut asm_file, entry_reg, exit_reg)?;
+                writeln!(asm_file, "\tb.ne comparison_fail")?;
+            } else {
+                writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+                writeln!(asm_file, "\tmrs x{}, {}", exit_reg, reg)?;
+                writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
+                writeln!(asm_file, "\tb.ne comparison_fail")?;
+            }
+        }
+    }
     writeln!(asm_file, "\t/* Check memory */")?;
     let mut name = 0;
     for (region, _contents) in pre_post_states.post_memory.iter() {
@@ -677,7 +735,7 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     if target.has_capabilities() {
     writeln!(asm_file, "")?;
-        write_capability_data(target, &mut asm_file, &gprs, &post_gprs, &system_registers, &pre_post_states, &system_cap_map)?;
+        write_capability_data(target, &mut asm_file, &gprs, &post_gprs, &system_registers, &post_system_registers, &pre_post_states, &system_cap_map)?;
     }
 
     writeln!(asm_file, "")?;

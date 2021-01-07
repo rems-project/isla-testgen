@@ -37,8 +37,9 @@ use crate::target::Target;
 use isla_lib::concrete::BV;
 use isla_lib::config::ISAConfig;
 use isla_lib::error::ExecError;
+use isla_lib::executor::Frame;
 use isla_lib::ir;
-use isla_lib::ir::{Name, Ty, Val};
+use isla_lib::ir::{Name, Ty, Val, UVal};
 use isla_lib::log;
 use isla_lib::memory;
 use isla_lib::smt;
@@ -281,6 +282,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     _isa_config: &ISAConfig<B>,
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<'ir, B>,
+    initial_frame: &Frame<'ir, B>,
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
@@ -319,6 +321,27 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     // reported to the user.
     let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), (bool, Option<GroundVal<B>>)> = HashMap::new();
     let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor<Name>>)> = HashSet::new();
+
+    // Ensure that system registers that are essential for the harness are included even
+    // if they don't appear in the event trace.
+    let initial_local_frame = isla_lib::executor::unfreeze_frame(initial_frame);
+    let initial_frame_registers = initial_local_frame.regs();
+    for (reg, acc) in target.essential_regs() {
+        assert!(acc.is_empty()); // TODO
+        if let Some(name) = shared_state.symtab.get(&zencode::encode(&reg)) {
+            if let Some(UVal::Init(val)) = initial_frame_registers.get(&name) {
+                if let Some(ground_val) = get_model_val(&mut model, val)? {
+                    initial_registers.insert((name, vec![]), ground_val);
+                } else {
+                    return Err(ExecError::Unreachable(format!("Essential system register {} does not have a value", reg)));
+                }
+            } else {
+                return Err(ExecError::Unreachable(format!("Essential system register {} does not have a value", reg)));
+            }
+        } else {
+            panic!("Missing initial system register: {}", reg);
+        }
+    }
 
     let mut init_complete = false;
 

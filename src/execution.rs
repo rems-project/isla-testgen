@@ -305,7 +305,8 @@ fn postprocess<'ir, B: BV, T: Target>(
 		} else if let Some(next_pc) = target.exception_handle(shared_state, &mut local_frame, &mut solver, b)? {
                     log_from!(tid, log::VERBOSE, format!("Processor exception handler entered, jumping to {}", next_pc));
 		    let pc_val = local_frame.regs_mut().get_mut(&pc_id).unwrap();
-		    *pc_val = UVal::Init(Val::Bits(next_pc))
+		    *pc_val = UVal::Init(Val::Bits(next_pc));
+                    solver.add_event(Event::WriteReg(pc_id, vec![], Val::Bits(next_pc)));
 		} else {
 		    return Err(format!("Concrete PC out of allowed ranges: {}", pc_i))
 		}

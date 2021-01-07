@@ -4,7 +4,7 @@ use std::ops::Range;
 use isla_lib::concrete::BV;
 use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{SharedState};
-use isla_lib::smt::{smtlib, Solver, Sym};
+use isla_lib::smt::{smtlib, Event, Solver, Sym};
 use isla_lib::zencode;
 
 use crate::extract_state::GVAccessor;
@@ -19,6 +19,10 @@ where
 {
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
+    /// Registers that the harness wants even if they're not in the trace
+    fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
+    /// System registers that the harness should check
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
@@ -64,6 +68,10 @@ impl Target for Aarch64 {
         regs.append(&mut flags);
         regs
     }
+    fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
+        vec![]
+    }
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
     fn init<'ir, B: BV>(
         &self,
         _shared_state: &SharedState<'ir, B>,
@@ -197,12 +205,28 @@ impl Target for Morello {
             sys_regs.push(("CCTLR_EL0".to_string(), vec![]));
             sys_regs.push(("DDC_EL0".to_string(), vec![]));
 	    sys_regs.push(("VBAR_EL1".to_string(), vec![]));
+            sys_regs.push(("HCR_EL2".to_string(), vec![]));
 	}
         regs.append(&mut vector_regs);
         regs.append(&mut other_regs);
         regs.append(&mut flags);
         regs.append(&mut sys_regs);
         regs
+    }
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
+        let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
+            ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
+        if self.run_in_el0() {
+            regs.push(("PCC".to_string(), vec![]))
+        }
+        regs
+    }
+    fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
+	if self.run_in_el0() {
+	    vec![("CPACR_EL1".to_string(), vec![]), ("HCR_EL2".to_string(), vec![])]
+        } else {
+            vec![]
+        }
     }
     // TODO: aarch64_compat version of translation table
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
@@ -259,7 +283,10 @@ impl Target for Morello {
 	    }
             for (reg, value) in
 		// Set up vector base capability to allow code in the vector table to run
-                [("VBAR_EL1", B::ones(1).append(B::from_u64(0xFFFFC00000010005)).unwrap().append(B::from_u64(0x0000000050320000)).unwrap())].iter()
+                [("VBAR_EL1", B::ones(1).append(B::from_u64(0xFFFFC00000010005)).unwrap().append(B::from_u64(0x0000000050320000)).unwrap()),
+                 // Set RW, although SCR_EL3.RW should be enough
+                 ("HCR_EL2", B::new(0x8000_0000, 64)),
+                 ].iter()
             {
                 let id = shared_state.symtab.lookup(&zencode::encode(reg));
                 let val = local_frame.regs_mut().get_mut(&id).unwrap();
@@ -351,6 +378,13 @@ impl Target for Morello {
                     Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(1, 1)))));
             }
+            if reg == "CPACR_EL1" {
+                // Force Morello on for EL0/1 for now (ensures that we can check the full PCC
+                // from CELR_EL1)
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(19, 18, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(0b11, 2)))));
+            }
         }
     }
     fn postprocess<'ir, B: BV>(&self,
@@ -418,8 +452,13 @@ impl Target for Morello {
                             Exp::Concat(
                                 Box::new(Exp::Extract(128, 64, Box::new(Exp::Var(*old_v)))),
                                 Box::new(Exp::Bits64(new_addr, 64)))));
+                        solver.add_event(Event::WriteReg(pcc_id, vec![], Val::Symbolic(v)));
                     }
-                    UVal::Init(Val::Bits(old_pcc)) => *pcc = UVal::Init(Val::Bits(old_pcc.set_slice(0, B::from_u64(new_addr)))),
+                    UVal::Init(Val::Bits(old_pcc)) => {
+                        let new_val = Val::Bits(old_pcc.set_slice(0, B::from_u64(new_addr)));
+                        *pcc = UVal::Init(new_val.clone());
+                        solver.add_event(Event::WriteReg(pcc_id, vec![], new_val));
+                    }
                     _ => return Err(format!("Unexpected value for PCC: {:?}", pcc)),
                 }
 		Ok(Some(B::from_u64(new_addr)))
