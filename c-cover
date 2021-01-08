@@ -1,0 +1,9 @@
+#!/bin/sh
+
+PARENT=`dirname "$0"`/../arm-morello-dropzone
+
+for f in *test*.elf; do
+  echo -n $f " "
+  "$PARENT"/c/morello_coverage -e $f 2>/dev/null | egrep -ao '(OK|FAILED)' || echo failed to even fail
+  mv sail_coverage $f.coverage
+done
