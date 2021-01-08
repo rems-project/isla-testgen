@@ -17,6 +17,8 @@ pub trait Target
 where
     Self: Sync,
 {
+    /// Test start address
+    fn init_pc(&self) -> u64;
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Registers that the harness wants even if they're not in the trace
@@ -57,6 +59,10 @@ where
 pub struct Aarch64 {}
 
 impl Target for Aarch64 {
+    fn init_pc(&self) -> u64 {
+        0x400000
+    }
+
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> = (0..31).map(|r| (format!("R{}", r), vec![])).collect();
         let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
@@ -177,6 +183,9 @@ impl Morello {
 }
 
 impl Target for Morello {
+    fn init_pc(&self) -> u64 {
+        0x40400000
+    }
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
             (0..31).map(|r| (format!("_R{:02}", r), vec![])).collect();
@@ -440,7 +449,7 @@ impl Target for Morello {
                 use isla_lib::ir::{UVal, Val};
                 use isla_lib::smt::smtlib::{Def, Exp};
 		// TODO: use conf for address
-                let new_addr: u64 = 0x400300;
+                let new_addr: u64 = 0x40400300;
                 // The caller sets the PC, but we need to update the PCC too
                 let pcc_id = shared_state.symtab.lookup("zPCC");
                 let pcc = frame.regs_mut().get_mut(&pcc_id).unwrap();

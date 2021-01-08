@@ -223,7 +223,7 @@ fn testgen_main<T: Target, B: BV>(
     let Initialized { regs, mut lets, shared_state } =
         initialize_architecture(&mut arch, symtab, &isa_config, AssertionMode::Optimistic);
 
-    let init_pc = isa_config.thread_base;
+    let init_pc: u64 = target.init_pc();
     // NB: The current aarch64 model needs this, however we explicitly
     // override the PC when setting up the registers.
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
@@ -243,7 +243,7 @@ fn testgen_main<T: Target, B: BV>(
     let dump_all_events = matches.opt_present("all-events");
 
     let symbolic_regions = [0x1000..0x2000];
-    let symbolic_code_regions = [isa_config.thread_base..isa_config.thread_top];
+    let symbolic_code_regions = [init_pc..init_pc + 0x10000];
     let mut memory = Memory::new();
     for r in &symbolic_regions {
         memory.add_symbolic_region(r.clone());
