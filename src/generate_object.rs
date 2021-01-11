@@ -79,6 +79,7 @@ fn write_bytes(asm_file: &mut File, bytes: &[u8]) -> Result<(), Box<dyn std::err
 }
 
 // Avoid a dependency on a Morello assembler by encoding these instructions directly.
+// Note that for xn to refer to a normal register read we must be in A64 mode
 fn write_ldr_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0xc2400000 | imm << 10 | xn << 5 | ct;
     writeln!(asm_file, "\t.inst {:#010x} // ldr c{}, [x{}, #{}]", v, ct, xn, imm)?;

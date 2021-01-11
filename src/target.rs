@@ -232,7 +232,7 @@ impl Target for Morello {
     }
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
 	if self.run_in_el0() {
-	    vec![("CPACR_EL1".to_string(), vec![]), ("HCR_EL2".to_string(), vec![])]
+	    vec![("CPACR_EL1".to_string(), vec![]), ("HCR_EL2".to_string(), vec![]), ("CCTLR_EL1".to_string(), vec![])]
         } else {
             vec![]
         }
@@ -393,6 +393,12 @@ impl Target for Morello {
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(19, 18, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0b11, 2)))));
+            }
+            if reg == "CCTLR_EL1" {
+                // The vector table harness code requires C64E = 0
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(5, 5, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(0, 1)))));
             }
         }
     }
