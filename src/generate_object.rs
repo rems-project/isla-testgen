@@ -656,11 +656,8 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\t/* No processor flags to check */")?;
     } else {
         writeln!(asm_file, "\t/* Check processor flags */")?;
-	if target.run_in_el0() {
-	    writeln!(asm_file, "\tmrs x{}, SPSR_EL3", entry_reg)?;
-	} else {
-            writeln!(asm_file, "\tmrs x{}, nzcv", entry_reg)?;
-	}
+        // Even if we reached here via processor exceptions the flags should be unchanged
+        writeln!(asm_file, "\tmrs x{}, nzcv", entry_reg)?;
         writeln!(asm_file, "\tubfx x{0}, x{0}, #28, #4", entry_reg)?;
         writeln!(asm_file, "\tmov x{}, #{:#03x}", exit_reg, flags.post_nzcv_mask)?;
         writeln!(asm_file, "\tand x{0}, x{0}, x{1}", entry_reg, exit_reg)?;
