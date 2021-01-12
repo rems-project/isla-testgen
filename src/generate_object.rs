@@ -128,6 +128,12 @@ fn write_scvalue(asm_file: &mut File, cd: u32, cn: u32, rm: u32) -> Result<(), B
     Ok(())
 }
 
+fn write_add_imm(asm_file: &mut File, cd: u32, cn: u32, imm12: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b00000010_0_0_000000000000_00000_00000 | imm12 << 10 | cn << 5 | cd;
+    writeln!(asm_file, "\t.inst {:#010x} // add c{}, c{}, #{}", v, cd, cn, imm12)?;
+    Ok(())
+}
+
 type SystemRegister = (&'static str, u32, u32, u32, u32, u32);
 
 fn write_msr_cap(asm_file: &mut File, (reg, op0, op1, crn, crm, op2): &SystemRegister, ct: u32) -> Result<(), Box<dyn std::error::Error>> {
@@ -328,7 +334,7 @@ pub fn write_capability_data<B: BV, T: Target>(
         }
     }
     for (reg, value) in system_registers {
-        if reg == "SP_EL3" || system_cap_map.contains_key(reg) {
+        if reg == "VBAR_EL1" || reg == "SP_EL3" || system_cap_map.contains_key(reg) {
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "initial_{}_value:", reg)?;
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
@@ -402,14 +408,16 @@ fn write_el1_vector(
     scratch_reg_1: u32,
     scratch_reg_2: u32,
     exit_address: u64,
+    table_offset: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(asm_file, "\tldr x{}, ={:#x}", scratch_reg_1, exit_address)?;
     writeln!(asm_file, "\tmrs x{}, ELR_EL1", scratch_reg_2)?;
     writeln!(asm_file, "\tsub x{}, x{}, x{}", scratch_reg_1, scratch_reg_1, scratch_reg_2)?;
     writeln!(asm_file, "\tcbnz x{}, #8", scratch_reg_1)?;
     writeln!(asm_file, "\tsmc 0")?;
-    writeln!(asm_file, "\tldr x{}, =el1_vector_jump_cap", scratch_reg_1)?;
+    writeln!(asm_file, "\tldr x{}, =initial_VBAR_EL1_value", scratch_reg_1)?;
     write_ldr_off(asm_file, scratch_reg_1, scratch_reg_1, 0)?;
+    write_add_imm(asm_file, scratch_reg_1, scratch_reg_1, table_offset)?;
     write_br(asm_file, scratch_reg_1)?;
     Ok(())
 }
@@ -599,7 +607,7 @@ pub fn make_asm_files<B: BV, T: Target>(
             writeln!(asm_file, "\tldr x{}, =initial_{}_value", entry_reg, reg)?;
             write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
             write_msr_cap(&mut asm_file, operand, entry_reg)?;
-        } else if *reg != "DDC_EL3" && *reg != "PCC" {
+        } else if *reg != "DDC_EL3" && *reg != "PCC" && *reg != "VBAR_EL1" {
             let mut value = value.lower_u64();
             // Ensure MMU is on for Morello even if we didn't use it in symbolic execution
             if (reg == "SCTLR_EL3" || reg == "SCTLR_EL1") && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
@@ -820,37 +828,12 @@ pub fn make_asm_files<B: BV, T: Target>(
         // Execute at the non-writable 0x5... virtual address, but load at the 0x1... physical address
 	writeln!(ld_file, ".vector_table_el1 0x0000000050320000 : AT(0x0000000010320000) {{ *(vector_table_el1) }}")?;
 	writeln!(asm_file, ".section vector_table_el1, #alloc, #execinstr")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
-	writeln!(asm_file, "\t.balign 128")?;
-	write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address)?;
+        let mut off = 0;
+        while off < 0x800 {
+	    if off != 0 { writeln!(asm_file, "\t.balign 128")?; }
+	    write_el1_vector(&mut asm_file, entry_reg, exit_reg, exit_address, off)?;
+            off += 0x80;
+        }
     }
     
     writeln!(asm_file, "")?;

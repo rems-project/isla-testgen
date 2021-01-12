@@ -4,7 +4,7 @@ use std::ops::Range;
 use isla_lib::concrete::BV;
 use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{SharedState};
-use isla_lib::smt::{smtlib, Event, Solver, Sym};
+use isla_lib::smt::{smtlib, Solver, Sym};
 use isla_lib::zencode;
 
 use crate::extract_state::GVAccessor;
@@ -48,12 +48,6 @@ where
     fn has_capabilities(&self) -> bool;
     fn run_in_el0(&self) -> bool;
     fn final_instruction(&self, exit_register: u32) -> u32;
-    fn exception_handle<'ir, B: BV>(
-        &self,
-        shared_state: &SharedState<'ir, B>,
-        frame: &mut LocalFrame<B>,
-        solver: &mut Solver<B>,
-        address: B) -> Result<Option<B>, String>;
 }
 
 pub struct Aarch64 {}
@@ -122,14 +116,6 @@ impl Target for Aarch64 {
     }
     fn final_instruction(&self, exit_register: u32) -> u32 {
         0xd61f0000 | (exit_register << 5) // br exit_register
-    }
-    fn exception_handle<'ir, B: BV>(
-        &self,
-        _shared_state: &SharedState<'ir, B>,
-        _frame: &mut LocalFrame<B>,
-        _solver: &mut Solver<B>,
-        _address: B) -> Result<Option<B>, String> {
-	Ok(None)
     }
 }
 
@@ -213,6 +199,7 @@ impl Target for Morello {
             sys_regs.push(("CCTLR_EL1".to_string(), vec![]));
             sys_regs.push(("CCTLR_EL0".to_string(), vec![]));
             sys_regs.push(("DDC_EL0".to_string(), vec![]));
+            // NB: the harness uses a different value for VBAR_EL1, then jumps to this
 	    sys_regs.push(("VBAR_EL1".to_string(), vec![]));
             sys_regs.push(("HCR_EL2".to_string(), vec![]));
 	}
@@ -232,7 +219,7 @@ impl Target for Morello {
     }
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
 	if self.run_in_el0() {
-	    vec![("CPACR_EL1".to_string(), vec![]), ("HCR_EL2".to_string(), vec![]), ("CCTLR_EL1".to_string(), vec![])]
+	    vec![("CPACR_EL1".to_string(), vec![]), ("HCR_EL2".to_string(), vec![]), ("CCTLR_EL1".to_string(), vec![]), ("VBAR_EL1".to_string(), vec![])]
         } else {
             vec![]
         }
@@ -291,9 +278,7 @@ impl Target for Morello {
 		_ => panic!("Unexpected value for PSTATE: {:?}", pstate),
 	    }
             for (reg, value) in
-		// Set up vector base capability to allow code in the vector table to run
-                [("VBAR_EL1", B::ones(1).append(B::from_u64(0xFFFFC00000010005)).unwrap().append(B::from_u64(0x0000000050320000)).unwrap()),
-                 // Set RW, although SCR_EL3.RW should be enough
+                [// Set RW, although SCR_EL3.RW should be enough
                  ("HCR_EL2", B::new(0x8000_0000, 64)),
                  ].iter()
             {
@@ -400,6 +385,12 @@ impl Target for Morello {
                     Box::new(Exp::Extract(5, 5, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0, 1)))));
             }
+            if reg == "VBAR_EL1" {
+                // The harness currently requires the Executive bit to be set
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(1, 1)))));
+            }
         }
     }
     fn postprocess<'ir, B: BV>(&self,
@@ -442,46 +433,5 @@ impl Target for Morello {
             EL3Only => 0b11_0000101100_00100_0_0_100_00000_0_0_0_00 | (exit_register << 5), // br exit_capability
 	    EL0 => 0xd4000001, // SVC 0
         }
-    }
-    fn exception_handle<'ir, B: BV>(
-        &self,
-        shared_state: &SharedState<'ir, B>,
-        frame: &mut LocalFrame<B>,
-        solver: &mut Solver<B>,
-        address: B) -> Result<Option<B>, String> {
-	if self.run_in_el0() {
-	    // TODO: move address to common position
-	    if address.unsigned() & !0x780 == 0x0000000050320000 {
-                use isla_lib::ir::{UVal, Val};
-                use isla_lib::smt::smtlib::{Def, Exp};
-		// TODO: use conf for address
-                let new_addr: u64 = 0x40400300;
-                // The caller sets the PC, but we need to update the PCC too
-                let pcc_id = shared_state.symtab.lookup("zPCC");
-                let pcc = frame.regs_mut().get_mut(&pcc_id).unwrap();
-                match pcc {
-                    UVal::Init(Val::Symbolic(old_v)) => {
-                        let v = solver.fresh();
-                        solver.add(Def::DefineConst(
-                            v,
-                            Exp::Concat(
-                                Box::new(Exp::Extract(128, 64, Box::new(Exp::Var(*old_v)))),
-                                Box::new(Exp::Bits64(new_addr, 64)))));
-                        solver.add_event(Event::WriteReg(pcc_id, vec![], Val::Symbolic(v)));
-                    }
-                    UVal::Init(Val::Bits(old_pcc)) => {
-                        let new_val = Val::Bits(old_pcc.set_slice(0, B::from_u64(new_addr)));
-                        *pcc = UVal::Init(new_val.clone());
-                        solver.add_event(Event::WriteReg(pcc_id, vec![], new_val));
-                    }
-                    _ => return Err(format!("Unexpected value for PCC: {:?}", pcc)),
-                }
-		Ok(Some(B::from_u64(new_addr)))
-	    } else {
-		Ok(None)
-	    }
-	} else {
-	    Ok(None)
-	}
     }
 }
