@@ -472,44 +472,6 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }
 
-pub fn regs_for_state<'ir, B: BV>(
-    shared_state: &SharedState<'ir, B>,
-    frame: Frame<'ir, B>,
-) -> Vec<(String, RegSource)> {
-    let mut local_frame = executor::unfreeze_frame(&frame);
-    let mut regs: Vec<String> = (0..31).map(|r| format!("R{}", r)).collect();
-    let mut other_regs = ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| r.to_string()).collect();
-    regs.append(&mut other_regs);
-
-    let mut reg_sources = vec![];
-    for reg in regs {
-        let ex_var = shared_state
-            .symtab
-            .get(&zencode::encode(&reg))
-            .unwrap_or_else(|| panic!("Register {} missing during setup", reg));
-        let ex_val = local_frame
-            .regs_mut()
-            .get_mut(&ex_var)
-            .unwrap_or_else(|| panic!("No value for register {} during setup", reg));
-        match ex_val {
-            UVal::Uninit(Ty::Bits(64)) => {
-                reg_sources.push((reg, RegSource::Uninit));
-            }
-            UVal::Init(Val::Symbolic(var)) => {
-                reg_sources.push((reg, RegSource::Symbolic(*var)));
-            }
-            UVal::Init(Val::Bits(bits)) => {
-                let rsrc = RegSource::Concrete(
-                    bits.try_into().unwrap_or_else(|_| panic!("Value {} for register {} too large", bits, reg)),
-                );
-                reg_sources.push((reg, rsrc));
-            }
-            _ => panic!("Bad value for register {} in setup", reg),
-        }
-    }
-    reg_sources
-}
-
 pub fn init_model<'ir, B: BV>(
     shared_state: &SharedState<'ir, B>,
     lets: Bindings<'ir, B>,
