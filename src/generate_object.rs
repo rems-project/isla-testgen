@@ -335,6 +335,18 @@ pub fn write_capability_data<B: BV, T: Target>(
     }
     for (reg, value) in system_registers {
         if reg == "VBAR_EL1" || reg == "SP_EL3" || system_cap_map.contains_key(reg) {
+            let value =
+                // The harness code provides its own vector table, overrides CCTLR_EL1.C64E, and
+                // jumps to the intended destination if the test isn't over, so apply C64E here.
+                if reg == "VBAR_EL1" {
+                    let c64 = match system_registers.iter().find(|(reg, _value)| reg == "CCTLR_EL1") {
+                        Some((_, value)) => ! (*value & B::new(1 << 5, 64)).is_zero(),
+                        None => false,
+                    };
+                    if c64 { *value | B::new(1, 64) } else { *value }
+                } else {
+                    *value
+                };
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "initial_{}_value:", reg)?;
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
@@ -611,6 +623,8 @@ pub fn make_asm_files<B: BV, T: Target>(
             let mut value = value.lower_u64();
             // Ensure MMU is on for Morello even if we didn't use it in symbolic execution
             if (reg == "SCTLR_EL3" || reg == "SCTLR_EL1") && target.has_capabilities() { value |= 0b1_0000_0000_0101; };
+            // The harness exception handler needs to be run in A64, even if the test continues in C64
+            if reg == "CCTLR_EL1" { value &= !(1 << 5) };
             writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value)?;
             // Avoid requirement for Morello assembler
             let (name, comment) =

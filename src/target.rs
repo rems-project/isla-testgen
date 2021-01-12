@@ -379,17 +379,15 @@ impl Target for Morello {
                     Box::new(Exp::Extract(19, 18, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0b11, 2)))));
             }
-            if reg == "CCTLR_EL1" {
-                // The vector table harness code requires C64E = 0
-                solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(5, 5, Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(0, 1)))));
-            }
             if reg == "VBAR_EL1" {
                 // The harness currently requires the Executive bit to be set
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(1, 1)))));
+                // Keep it sufficiently aligned rather than making the harness do it
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(10, 0, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(0, 11)))));
             }
         }
     }
