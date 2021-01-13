@@ -428,7 +428,12 @@ fn write_el1_vector(
     writeln!(asm_file, "\tcbnz x{}, #8", scratch_reg_1)?;
     writeln!(asm_file, "\tsmc 0")?;
     writeln!(asm_file, "\tldr x{}, =initial_VBAR_EL1_value", scratch_reg_1)?;
-    write_ldr_off(asm_file, scratch_reg_1, scratch_reg_1, 0)?;
+    // Load via a capability to avoid using DDC.  We don't know what
+    // CCTLR_EL3.PCCBO is set to, so use an scvalue to be sure we get
+    // the right value
+    write_cvtp(asm_file, scratch_reg_2, scratch_reg_1)?;
+    write_scvalue(asm_file, scratch_reg_2, scratch_reg_2, scratch_reg_1)?;
+    write_aldr_off(asm_file, scratch_reg_1, scratch_reg_2, 0)?;
     write_add_imm(asm_file, scratch_reg_1, scratch_reg_1, table_offset)?;
     write_br(asm_file, scratch_reg_1)?;
     Ok(())

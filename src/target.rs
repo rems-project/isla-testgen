@@ -199,6 +199,7 @@ impl Target for Morello {
             sys_regs.push(("CCTLR_EL1".to_string(), vec![]));
             sys_regs.push(("CCTLR_EL0".to_string(), vec![]));
             sys_regs.push(("DDC_EL0".to_string(), vec![]));
+            sys_regs.push(("DDC_EL1".to_string(), vec![]));
             // NB: the harness uses a different value for VBAR_EL1, then jumps to this
 	    sys_regs.push(("VBAR_EL1".to_string(), vec![]));
             sys_regs.push(("HCR_EL2".to_string(), vec![]));
