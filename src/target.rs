@@ -394,6 +394,12 @@ impl Target for Morello {
                     Box::new(Exp::Extract(10, 0, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0, 11)))));
             }
+            if reg == "CCTLR_EL1" {
+                // RES0 fields; really just to ensure that the register appears in the SMT model
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(31, 8, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(0, 24)))));
+            }
         }
     }
     fn exception_stop_functions() -> Vec<String> {
