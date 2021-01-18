@@ -38,15 +38,16 @@ where
     fn is_gpr(name: &str) -> Option<u32>;
     fn gpr_prefix() -> &'static str;
     fn gpr_pad() -> bool;
+    fn exception_stop_functions() -> Vec<String>;
     fn postprocess<'ir, B: BV>(&self,
         shared_state: &SharedState<'ir, B>,
         frame: &LocalFrame<B>,
         solver: &mut Solver<B>,
     ) -> Result<(), String>;
-    // I'd like to move the stuff below to the config
-    fn run_instruction_function() -> String;
     fn has_capabilities(&self) -> bool;
     fn run_in_el0(&self) -> bool;
+    // I'd like to move the stuff below to the config
+    fn run_instruction_function() -> String;
     fn final_instruction(&self, exit_register: u32) -> u32;
 }
 
@@ -100,6 +101,9 @@ impl Target for Aarch64 {
     }
     fn run_instruction_function() -> String {
         "Step_CPU".to_string()
+    }
+    fn exception_stop_functions() -> Vec<String> {
+        vec!["AArch64_TakeException".to_string()]
     }
     fn postprocess<'ir, B: BV>(&self,
         _shared_state: &SharedState<'ir, B>,
@@ -391,6 +395,9 @@ impl Target for Morello {
                     Box::new(Exp::Bits64(0, 11)))));
             }
         }
+    }
+    fn exception_stop_functions() -> Vec<String> {
+        vec!["AArch64_TakeException".to_string()]
     }
     fn postprocess<'ir, B: BV>(&self,
         _shared_state: &SharedState<'ir, B>,

@@ -147,6 +147,7 @@ fn isla_main() -> i32 {
     opts.optopt("", "z3-timeout", "Soft timeout for Z3 solver (60s default)", "<milliseconds>");
     opts.optopt("", "assertion-reports", "Write backtraces and events for failed assertions", "<file>");
     opts.optflag("", "translation-in-symbolic-execution", "Turn on the MMU with a simple translation table during symbolic execution");
+    opts.optmulti("x", "exceptions-at", "Allow processor exceptions at given instruction", "<instruction number>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -229,6 +230,8 @@ fn testgen_main<T: Target, B: BV>(
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
 
     let stop_functions = parse_function_names(matches.opt_strs("stop-fn"), &shared_state);
+    let exception_stop_functions = parse_function_names(T::exception_stop_functions(), &shared_state);
+    let exceptions_allowed_at: HashSet<usize> = matches.opt_strs("exceptions-at").iter().map(|s| s.parse().unwrap_or_else(|e| panic!("Bad instruction index {}: {}", s, e))).collect();
 
     let little_endian = match matches.opt_str("endianness").as_deref() {
         Some("little") | None => true,
@@ -272,6 +275,8 @@ fn testgen_main<T: Target, B: BV>(
         isa_config: &isa_config,
         encodings: &encodings,
         stop_functions: &stop_functions,
+        exception_stop_functions: &exception_stop_functions,
+        exceptions_allowed_at: &exceptions_allowed_at,
         register_types: &register_types,
         symbolic_regions: &symbolic_regions,
         symbolic_code_regions: &symbolic_code_regions,
@@ -326,6 +331,8 @@ struct TestConf<'ir, B> {
     isa_config: &'ir ISAConfig<B>,
     encodings: &'ir asl_tag_files::Encodings,
     stop_functions: &'ir HashSet<Name>,
+    exception_stop_functions: &'ir HashSet<Name>,
+    exceptions_allowed_at: &'ir HashSet<usize>,
     register_types: &'ir HashMap<Name, Ty<Name>>,
     symbolic_regions: &'ir [Range<Address>],
     symbolic_code_regions: &'ir [Range<Address>],
@@ -352,13 +359,16 @@ fn generate_test<'ir, B: BV, T: Target>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_instruction_function = T::run_instruction_function();
 
+    let all_stop_functions: HashSet<Name> = conf.stop_functions.union(conf.exception_stop_functions).copied().collect();
+
     let mut opcode_vars = vec![];
 
     let mut opcode_index = 0;
     let mut rng = rand::thread_rng();
     let mut instr_map: HashMap<B, String> = HashMap::new();
-    for (instruction, opcode_mask) in conf.instructions {
+    for (i, (instruction, opcode_mask)) in conf.instructions.iter().enumerate() {
         let mut random_attempts_left = conf.max_retries;
+        let stop_fns = if conf.exceptions_allowed_at.contains(&i) { conf.stop_functions } else { &all_stop_functions };
         loop {
             let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
             instr_map.insert(opcode, description);
@@ -377,7 +387,7 @@ fn generate_test<'ir, B: BV, T: Target>(
                 &frame,
                 op_checkpoint,
                 opcode_var,
-                conf.stop_functions,
+                stop_fns,
                 conf.dump_all_events,
                 &conf.assertion_reports,
             );
