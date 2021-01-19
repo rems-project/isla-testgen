@@ -42,7 +42,7 @@ use crate::target::{Target, TranslationTableInfo};
 use isla_lib::concrete::BV;
 use isla_lib::error::ExecError;
 use isla_lib::executor;
-use isla_lib::executor::{freeze_frame, Frame, LocalFrame};
+use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions};
 use isla_lib::ir::*;
 use isla_lib::memory::{Memory, SmtKind};
 use isla_lib::simplify::write_events;
@@ -575,7 +575,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
     frame: &Frame<'ir, B>,
     checkpoint: Checkpoint<B>,
     opcode_var: Sym,
-    stop_set: &HashSet<Name>,
+    stop_set: &StopConditions,
     dump_events: bool,
     assertion_reports: &Option<String>,
 ) -> Vec<(Frame<'ir, B>, Checkpoint<B>)> {
@@ -588,7 +588,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
 
     let mut task =
         local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
-    task.set_stop_functions(stop_set);
+    task.set_stop_conditions(stop_set);
 
     let queue = Arc::new(SegQueue::new());
 

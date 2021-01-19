@@ -40,7 +40,7 @@ use std::process::exit;
 
 // TODO: allow B64 or B129
 use isla_lib::concrete::{bitvector129::B129, BV};
-use isla_lib::executor::Frame;
+use isla_lib::executor::{Frame, StopConditions};
 use isla_lib::ir::*;
 use isla_lib::memory::{Address, Memory};
 use isla_lib::simplify::write_events;
@@ -140,7 +140,7 @@ fn isla_main() -> i32 {
     opts.optopt("o", "output", "base name for output files", "<file>");
     opts.optopt("n", "number-gens", "number of tests to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
-    opts.optmulti("k", "stop-fn", "stop executions early if they reach this function", "<function name>");
+    opts.optmulti("k", "stop-at", "stop executions early if they reach this function (with optional context)", "<function name[, function name]>");
     opts.optflag("", "events", "dump final events");
     opts.optflag("", "all-events", "dump events for every behaviour");
     opts.optflag("", "uniform-registers", "Choose from registers uniformly, rather than with a bias");
@@ -148,6 +148,7 @@ fn isla_main() -> i32 {
     opts.optopt("", "assertion-reports", "Write backtraces and events for failed assertions", "<file>");
     opts.optflag("", "translation-in-symbolic-execution", "Turn on the MMU with a simple translation table during symbolic execution");
     opts.optmulti("x", "exceptions-at", "Allow processor exceptions at given instruction", "<instruction number>");
+//    opts.optopt("", "all-paths-for", "Generate tests using all feasible paths for the given instruction");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -177,18 +178,34 @@ fn isla_main() -> i32 {
     }
 }
 
-fn parse_function_names<B>(names: Vec<String>, shared_state: &SharedState<B>) -> HashSet<Name> {
-    let mut set = HashSet::new();
-    for f in names {
-        let fz = zencode::encode(&f);
-        let n = shared_state
-            .symtab
-            .get(&fz)
-            .or_else(|| shared_state.symtab.get(&f))
-            .unwrap_or_else(|| panic!("Function {} not found", f));
-        set.insert(n);
+fn parse_function_name<B>(f: &str, shared_state: &SharedState<B>) -> Name {
+    let fz = zencode::encode(f);
+    shared_state
+        .symtab
+        .get(&fz)
+        .or_else(|| shared_state.symtab.get(&f))
+        .unwrap_or_else(|| panic!("Function {} not found", f))
+}
+
+fn parse_stop_conditions<B>(args: Vec<String>, shared_state: &SharedState<B>) -> StopConditions {
+    let mut conds = StopConditions::new();
+    for arg in args {
+        let mut names = arg.split(',');
+        if let Some(f) = names.next() {
+            if let Some(ctx) = names.next() {
+                if let None = names.next() {
+                    conds.add(parse_function_name(f, shared_state), Some(parse_function_name(ctx, shared_state)));
+                } else {
+                    panic!("Bad stop condition: {}", arg);
+                }
+            } else {
+                conds.add(parse_function_name(f, shared_state), None);
+            }
+        } else {
+            panic!("Bad stop condition: {}", arg);
+        }
     }
-    set
+    conds
 }
 
 fn testgen_main<T: Target, B: BV>(
@@ -229,8 +246,8 @@ fn testgen_main<T: Target, B: BV>(
     // override the PC when setting up the registers.
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
 
-    let stop_functions = parse_function_names(matches.opt_strs("stop-fn"), &shared_state);
-    let exception_stop_functions = parse_function_names(T::exception_stop_functions(), &shared_state);
+    let stop_conditions = parse_stop_conditions(matches.opt_strs("stop-at"), &shared_state);
+    let exception_stop_conditions = parse_stop_conditions(T::exception_stop_functions(), &shared_state);
     let exceptions_allowed_at: HashSet<usize> = matches.opt_strs("exceptions-at").iter().map(|s| s.parse().unwrap_or_else(|e| panic!("Bad instruction index {}: {}", s, e))).collect();
 
     let little_endian = match matches.opt_str("endianness").as_deref() {
@@ -274,8 +291,8 @@ fn testgen_main<T: Target, B: BV>(
         little_endian,
         isa_config: &isa_config,
         encodings: &encodings,
-        stop_functions: &stop_functions,
-        exception_stop_functions: &exception_stop_functions,
+        stop_conditions: &stop_conditions,
+        exception_stop_conditions: &exception_stop_conditions,
         exceptions_allowed_at: &exceptions_allowed_at,
         register_types: &register_types,
         symbolic_regions: &symbolic_regions,
@@ -330,8 +347,8 @@ struct TestConf<'ir, B> {
     little_endian: bool,
     isa_config: &'ir ISAConfig<B>,
     encodings: &'ir asl_tag_files::Encodings,
-    stop_functions: &'ir HashSet<Name>,
-    exception_stop_functions: &'ir HashSet<Name>,
+    stop_conditions: &'ir StopConditions,
+    exception_stop_conditions: &'ir StopConditions,
     exceptions_allowed_at: &'ir HashSet<usize>,
     register_types: &'ir HashMap<Name, Ty<Name>>,
     symbolic_regions: &'ir [Range<Address>],
@@ -359,7 +376,7 @@ fn generate_test<'ir, B: BV, T: Target>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_instruction_function = T::run_instruction_function();
 
-    let all_stop_functions: HashSet<Name> = conf.stop_functions.union(conf.exception_stop_functions).copied().collect();
+    let all_stop_conditions = conf.stop_conditions.union(conf.exception_stop_conditions);
 
     let mut opcode_vars = vec![];
 
@@ -368,7 +385,7 @@ fn generate_test<'ir, B: BV, T: Target>(
     let mut instr_map: HashMap<B, String> = HashMap::new();
     for (i, (instruction, opcode_mask)) in conf.instructions.iter().enumerate() {
         let mut random_attempts_left = conf.max_retries;
-        let stop_fns = if conf.exceptions_allowed_at.contains(&i) { conf.stop_functions } else { &all_stop_functions };
+        let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
         loop {
             let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
             instr_map.insert(opcode, description);
@@ -387,7 +404,7 @@ fn generate_test<'ir, B: BV, T: Target>(
                 &frame,
                 op_checkpoint,
                 opcode_var,
-                stop_fns,
+                stop_conds,
                 conf.dump_all_events,
                 &conf.assertion_reports,
             );
