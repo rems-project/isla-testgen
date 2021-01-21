@@ -393,6 +393,11 @@ impl Target for Morello {
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(10, 0, Box::new(Exp::Var(v)))),
                     Box::new(Exp::Bits64(0, 11)))));
+                // Make the capability bounds use the value to avoid an annoying case split by not using internal exponent
+                // TODO: make this configurable
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(94, 94, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bits64(1, 1)))));
             }
             if reg == "CCTLR_EL1" {
                 // RES0 fields; really just to ensure that the register appears in the SMT model
