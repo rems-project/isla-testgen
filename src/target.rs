@@ -218,7 +218,8 @@ impl Target for Morello {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
             ["SP_EL0", "SP_EL1", "SP_EL2", "SP_EL3"].iter().map(|r| (r.to_string(), vec![])).collect();
         if self.run_in_el0() {
-            regs.push(("PCC".to_string(), vec![]))
+            regs.push(("PCC".to_string(), vec![]));
+            regs.push(("ESR_EL1".to_string(), vec![]));
         }
         regs
     }

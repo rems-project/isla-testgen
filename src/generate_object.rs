@@ -410,6 +410,9 @@ pub fn write_capability_data<B: BV, T: Target>(
         writeln!(asm_file, "\t.dword {}", address)?;
     }
     writeln!(asm_file, "\t.dword 0")?;
+
+    writeln!(asm_file, "\tesr_el1_dump_address:")?;
+    writeln!(asm_file, "\t.dword 0")?;
     Ok(())
 }
 
@@ -422,6 +425,17 @@ fn write_el1_vector(
     exit_address: u64,
     table_offset: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Stash ESR_EL1 in case we want to check it at the end, and also use it to
+    // see if we've taken an exception before - we should only do at most one
+    // during the test because otherwise it will loop.  Checking allows us to
+    // easily bail out if we keep faulting.  Note that the initial value of 0 at
+    // esr_el1_dump_address won't occur in practice because it's for a 16-bit
+    // instruction.
+    writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", scratch_reg_2)?;
+    writeln!(asm_file, "\tldr x{}, [x{}]", scratch_reg_1, scratch_reg_2)?;
+    writeln!(asm_file, "\tcbnz x{}, #28", scratch_reg_1)?;
+    writeln!(asm_file, "\tmrs x{}, ESR_EL1", scratch_reg_1)?;
+    writeln!(asm_file, "\tstr x{}, [x{}]", scratch_reg_1, scratch_reg_2)?;
     writeln!(asm_file, "\tldr x{}, ={:#x}", scratch_reg_1, exit_address)?;
     writeln!(asm_file, "\tmrs x{}, ELR_EL1", scratch_reg_2)?;
     writeln!(asm_file, "\tsub x{}, x{}, x{}", scratch_reg_1, scratch_reg_1, scratch_reg_2)?;
@@ -723,23 +737,31 @@ pub fn make_asm_files<B: BV, T: Target>(
     if !post_system_registers.is_empty() {
         writeln!(asm_file, "\t/* Check system registers */")?;
         for (reg, value) in &post_system_registers {
-            let actual_reg = if reg == "PCC" {
-                assert!(target.run_in_el0());
-                "ELR_EL1"
-            } else {
-                reg
-            };
-            if let Some(operand) = system_cap_map.get(actual_reg) {
-                writeln!(asm_file, "\tldr x{}, =final_{}_value", entry_reg, reg)?;
-                write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
-                write_mrs_cap(&mut asm_file, exit_reg, operand)?;
-                write_chkeq(&mut asm_file, entry_reg, exit_reg)?;
-                writeln!(asm_file, "\tb.ne comparison_fail")?;
-            } else {
+            if reg == "ESR_EL1" {
                 writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
-                writeln!(asm_file, "\tmrs x{}, {}", exit_reg, reg)?;
+                writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", exit_reg)?;
+                writeln!(asm_file, "\tldr x{}, [x{}]", exit_reg, exit_reg)?;
                 writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
                 writeln!(asm_file, "\tb.ne comparison_fail")?;
+            } else {
+                let actual_reg = if reg == "PCC" {
+                    assert!(target.run_in_el0());
+                    "ELR_EL1"
+                } else {
+                    reg
+                };
+                if let Some(operand) = system_cap_map.get(actual_reg) {
+                    writeln!(asm_file, "\tldr x{}, =final_{}_value", entry_reg, reg)?;
+                    write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+                    write_mrs_cap(&mut asm_file, exit_reg, operand)?;
+                    write_chkeq(&mut asm_file, entry_reg, exit_reg)?;
+                    writeln!(asm_file, "\tb.ne comparison_fail")?;
+                } else {
+                    writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+                    writeln!(asm_file, "\tmrs x{}, {}", exit_reg, reg)?;
+                    writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
+                    writeln!(asm_file, "\tb.ne comparison_fail")?;
+                }
             }
         }
     }
