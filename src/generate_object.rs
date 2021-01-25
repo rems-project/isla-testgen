@@ -863,7 +863,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.global tt_l1_base")?;
     writeln!(asm_file, "tt_l1_base:")?;
     writeln!(asm_file, "\t.dword 0x3000000000000741")?;
-    writeln!(asm_file, "\t.dword 0x3000000000000701 // No write permission so that EL1 can execute")?;
+    writeln!(asm_file, "\t.dword 0x30000000000007c1 // No write permission so that EL1 can execute")?;
     writeln!(asm_file, "\t.fill 4088, 1, 0")?;
 
     writeln!(ld_file, "}}")?;
