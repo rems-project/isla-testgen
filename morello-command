@@ -1,5 +1,5 @@
 # __SleepRequest is killed to prevent (e.g.) wfe, which is encoded as a hint
-# due to exception handling problems I'm going further just now and excluding all hints
+# due to sail exception handling problems I'm going further just now and excluding all hints
 # pac and tagged memory instructions not supported on morello
 # exclusive instructions not supported without memory setup
 # ldct and stct not supported without memory setup
@@ -14,7 +14,8 @@ export RUST_BACKTRACE=1
 /usr/bin/time -v \
 target/release/isla-testgen -a morello -T 1 -C morello.toml -A ../arm-morello-dropzone/ir/morello.ir \
   -t ../arm-morello-dropzone/2020-09-02_asl_morello/v8a64.tag -t ../arm-morello-dropzone/2020-09-02_asl_morello/siris.tag \
-  --max-retries 20 -k Halt -k AArch64_TakeException -k AArch64_DataAbort -k __SleepRequest -k ConstrainUnpredictable \
+  --max-retries 20 -k Halt -k __SleepRequest -k ConstrainUnpredictable \
+  -k AArch64_TakeException,__FetchInstr -k AArch64_TakeException,post_toplevel_check \
   --exclude /pac/  --exclude /vector/ --exclude /float/ --exclude /pointer/mc --exclude /tags/mc \
   --exclude integer/crc \
   --exclude '^bl?ra:' \
