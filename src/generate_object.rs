@@ -509,9 +509,8 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     if target.has_capabilities() {
         writeln!(asm_file, "\t/* Ensure Morello is on */")?;
-        writeln!(asm_file, "\tmrs x{}, cptr_el3", entry_reg)?;
-        writeln!(asm_file, "\torr x{0}, x{0}, #0x200", entry_reg)?;
-        writeln!(asm_file, "\tmsr cptr_el3, x{}", entry_reg)?;
+        writeln!(asm_file, "\tmov x0, 0x200")?;
+        writeln!(asm_file, "\tmsr cptr_el3, x0")?;
         writeln!(asm_file, "\tisb")?;
 
         // We don't know what CCTLR_EL3.PCCBO is set to, so use an
