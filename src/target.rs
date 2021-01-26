@@ -353,10 +353,10 @@ impl Target for Morello {
 		// TODO: allow variation
 		if self.translation_in_symbolic_execution {
 		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
-						   Box::new(Exp::Bits64(0x31c5d505, 64)))));
+						   Box::new(Exp::Bits64(0x30d5d985, 64)))));
 		} else {
 		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
-						   Box::new(Exp::Bits64(0x31c5d504, 64)))));
+						   Box::new(Exp::Bits64(0x30d5d984, 64)))));
 		}
 	    }
             if reg == "CCTLR_EL3" {
