@@ -272,6 +272,22 @@ fn get_exit_address<B: BV>(
     }
 }
 
+// If we pretend during symbol execution that there's no address
+// translation then ESR_EL1 may indicate the wrong translation
+// stage/level, so mask those out.
+fn esr_el1_fixup_mask(
+    val: u64,
+) -> u64 {
+    let ec = (val & 0x0000_0000_fc00_0000) >> 25;
+    match ec {
+        0b100000 => 0b0100_0011, // S1PTW, bottom bits of IFSC
+        0b100001 => 0b0100_0011, // S1PTW, bottom bits of IFSC
+        0b100100 => 0b0100_0011, // S1PTW, bottom bits of DFSC
+        0b100101 => 0b0100_0011, // S1PTW, bottom bits of DFSC
+        _ => 0,
+    }
+}
+
 pub fn write_main_memory<B: BV>(
     asm_file: &mut File,
     ld_file: &mut File,
@@ -738,9 +754,13 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\t/* Check system registers */")?;
         for (reg, value) in &post_system_registers {
             if reg == "ESR_EL1" {
-                writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+                let value = value.lower_u64();
+                let mask = esr_el1_fixup_mask(value);
                 writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", exit_reg)?;
                 writeln!(asm_file, "\tldr x{}, [x{}]", exit_reg, exit_reg)?;
+                writeln!(asm_file, "\tmov x{}, {:#x}", entry_reg, mask)?;
+                writeln!(asm_file, "\torr x{}, x{}, x{}", exit_reg, exit_reg, entry_reg)?;
+                writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value | mask)?;
                 writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
                 writeln!(asm_file, "\tb.ne comparison_fail")?;
             } else {
