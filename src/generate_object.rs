@@ -86,6 +86,18 @@ fn write_ldr_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), 
     Ok(())
 }
 
+fn write_ldr_off_int(asm_file: &mut File, xt: u32, cn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0x82600c00 | imm << 12 | cn << 5 | xt;
+    writeln!(asm_file, "\t.inst {:#010x} // ldr x{}, [c{}, #{}]", v, xt, cn, imm)?;
+    Ok(())
+}
+
+fn write_str_off_int(asm_file: &mut File, xt: u32, cn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0x82400c00 | imm << 12 | cn << 5 | xt;
+    writeln!(asm_file, "\t.inst {:#010x} // str x{}, [c{}, #{}]", v, xt, cn, imm)?;
+    Ok(())
+}
+
 fn write_aldr_off(asm_file: &mut File, ct: u32, cn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0x82600000 | imm << 12 | cn << 5 | ct;
     writeln!(asm_file, "\t.inst {:#010x} // ldr c{}, [c{}, #{}]", v, ct, cn, imm)?;
@@ -441,26 +453,29 @@ fn write_el1_vector(
     exit_address: u64,
     table_offset: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Load via capabilities here to avoid using DDC.  We don't know what
+    // CCTLR_EL3.PCCBO is set to, so use an scvalue to be sure we get
+    // the right value
+
     // Stash ESR_EL1 in case we want to check it at the end, and also use it to
     // see if we've taken an exception before - we should only do at most one
     // during the test because otherwise it will loop.  Checking allows us to
     // easily bail out if we keep faulting.  Note that the initial value of 0 at
     // esr_el1_dump_address won't occur in practice because it's for a 16-bit
     // instruction.
-    writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", scratch_reg_2)?;
-    writeln!(asm_file, "\tldr x{}, [x{}]", scratch_reg_1, scratch_reg_2)?;
+    writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", scratch_reg_1)?;
+    write_cvtp(asm_file, scratch_reg_2, scratch_reg_1)?;
+    write_scvalue(asm_file, scratch_reg_2, scratch_reg_2, scratch_reg_1)?;
+    write_ldr_off_int(asm_file, scratch_reg_1, scratch_reg_2, 0)?;
     writeln!(asm_file, "\tcbnz x{}, #28", scratch_reg_1)?;
     writeln!(asm_file, "\tmrs x{}, ESR_EL1", scratch_reg_1)?;
-    writeln!(asm_file, "\tstr x{}, [x{}]", scratch_reg_1, scratch_reg_2)?;
+    write_str_off_int(asm_file, scratch_reg_1, scratch_reg_2, 0)?;
     writeln!(asm_file, "\tldr x{}, ={:#x}", scratch_reg_1, exit_address)?;
     writeln!(asm_file, "\tmrs x{}, ELR_EL1", scratch_reg_2)?;
     writeln!(asm_file, "\tsub x{}, x{}, x{}", scratch_reg_1, scratch_reg_1, scratch_reg_2)?;
     writeln!(asm_file, "\tcbnz x{}, #8", scratch_reg_1)?;
     writeln!(asm_file, "\tsmc 0")?;
     writeln!(asm_file, "\tldr x{}, =initial_VBAR_EL1_value", scratch_reg_1)?;
-    // Load via a capability to avoid using DDC.  We don't know what
-    // CCTLR_EL3.PCCBO is set to, so use an scvalue to be sure we get
-    // the right value
     write_cvtp(asm_file, scratch_reg_2, scratch_reg_1)?;
     write_scvalue(asm_file, scratch_reg_2, scratch_reg_2, scratch_reg_1)?;
     write_aldr_off(asm_file, scratch_reg_1, scratch_reg_2, 0)?;
