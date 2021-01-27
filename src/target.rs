@@ -351,12 +351,15 @@ impl Target for Morello {
             }
 	    if reg == "SCTLR_EL1" {
 		// TODO: allow variation
+                // Note that alignment checking needs to be on if we're lying about address
+                // translation, because without the MMU the memory will appear to be Device
+                // Memory and the translation stub checks that all accesses are aligned.
 		if self.translation_in_symbolic_execution {
 		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
 						   Box::new(Exp::Bits64(0x30d5d985, 64)))));
 		} else {
 		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
-						   Box::new(Exp::Bits64(0x30d5d984, 64)))));
+						   Box::new(Exp::Bits64(0x30d5d99e, 64)))));
 		}
 	    }
             if reg == "CCTLR_EL3" {
