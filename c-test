@@ -4,5 +4,5 @@ PARENT=`dirname "$0"`/../arm-morello-dropzone
 
 for f in test*.elf; do
   echo -n $f " "
-  "$PARENT"/c/morello -e $f 2>/dev/null | egrep -ao '(OK|FAILED)' || echo failed to even fail
+  timeout 2s "$PARENT"/c/morello -e $f 2>/dev/null | egrep -ao '(OK|FAILED)' || echo failed to even fail
 done
