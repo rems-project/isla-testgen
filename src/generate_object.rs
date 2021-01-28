@@ -290,12 +290,12 @@ fn get_exit_address<B: BV>(
 fn esr_el1_fixup_mask(
     val: u64,
 ) -> u64 {
-    let ec = (val & 0x0000_0000_fc00_0000) >> 25;
+    let ec = (val & 0x0000_0000_fc00_0000) >> 26;
     match ec {
-        0b100000 => 0b0100_0011, // S1PTW, bottom bits of IFSC
-        0b100001 => 0b0100_0011, // S1PTW, bottom bits of IFSC
-        0b100100 => 0b0100_0011, // S1PTW, bottom bits of DFSC
-        0b100101 => 0b0100_0011, // S1PTW, bottom bits of DFSC
+        0b100000 => 0b1000_0011, // S1PTW, bottom bits of IFSC
+        0b100001 => 0b1000_0011, // S1PTW, bottom bits of IFSC
+        0b100100 => 0b1000_0011, // S1PTW, bottom bits of DFSC
+        0b100101 => 0b1000_0011, // S1PTW, bottom bits of DFSC
         _ => 0,
     }
 }
