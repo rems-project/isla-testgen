@@ -148,7 +148,7 @@ fn isla_main() -> i32 {
     opts.optopt("", "assertion-reports", "Write backtraces and events for failed assertions", "<file>");
     opts.optflag("", "translation-in-symbolic-execution", "Turn on the MMU with a simple translation table during symbolic execution");
     opts.optmulti("x", "exceptions-at", "Allow processor exceptions at given instruction", "<instruction number>");
-//    opts.optopt("", "all-paths-for", "Generate tests using all feasible paths for the given instruction");
+    opts.optopt("", "all-paths-for", "Generate tests using all feasible paths for the given instruction", "<instruction number>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -300,6 +300,8 @@ fn testgen_main<T: Target, B: BV>(
         assertion_reports: matches.opt_str("assertion-reports"),
     };
 
+    let all_paths_for = matches.opt_get("all-paths-for").expect("Bad all-paths-for argument");
+
     if number_gens > 1 {
         let mut total_attempts = 0;
         for i in 0..number_gens {
@@ -307,14 +309,26 @@ fn testgen_main<T: Target, B: BV>(
             loop {
                 attempts += 1;
                 println!("---------- Generating test {} attempt {}", i + 1, attempts);
-                match generate_test(
-                    &target,
-                    &testconf,
-                    frame.clone(),
-                    checkpoint.clone(),
-                    &format!("{}{:03}", base_name, i + 1),
-                    register_bias,
-                ) {
+                let result = match all_paths_for {
+                    None => generate_test(
+                        &target,
+                        &testconf,
+                        frame.clone(),
+                        checkpoint.clone(),
+                        &format!("{}{:03}", base_name, i + 1),
+                        register_bias,
+                    ),
+                    Some(core_instruction) => generate_group_of_tests_around(
+                        &target,
+                        &testconf,
+                        frame.clone(),
+                        checkpoint.clone(),
+                        &format!("{}{:03}", base_name, i + 1),
+                        register_bias,
+                        core_instruction,
+                    ),
+                };
+                match result {
                     Ok(()) => break,
                     Err(err) => {
                         println!("Generating test {} attempt {} failed: {}", i + 1, attempts, err);
@@ -329,8 +343,12 @@ fn testgen_main<T: Target, B: BV>(
         }
         println!("---------- Complete, {} tests generated after {} attempts", number_gens, total_attempts);
     } else if number_gens == 1 {
-        generate_test(&target, &testconf, frame, checkpoint, base_name, register_bias)
-            .unwrap_or_else(|err| println!("Generation attempt failed: {}", err));
+        match all_paths_for {
+            None => generate_test(&target, &testconf, frame, checkpoint, base_name, register_bias)
+                .unwrap_or_else(|err| println!("Generation attempt failed: {}", err)),
+            Some(i) => generate_group_of_tests_around(&target, &testconf, frame, checkpoint, base_name, register_bias, i)
+                .unwrap_or_else(|err| println!("Generation attempt failed: {}", err)),
+        }
     }
 
     0
@@ -455,6 +473,213 @@ fn generate_test<'ir, B: BV, T: Target>(
     )?;
     generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
     generate_object::build_elf_file(conf.isa_config, basename)?;
+
+    Ok(())
+}
+
+fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
+    target: &'ir T,
+    conf: &TestConf<'ir, B>,
+    mut frame: Frame<'ir, B>,
+    mut checkpoint: Checkpoint<B>,
+    basename: &str,
+    register_bias: bool,
+    core_instruction_index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let run_instruction_function = T::run_instruction_function();
+
+    let all_stop_conditions = conf.stop_conditions.union(conf.exception_stop_conditions);
+
+    let mut opcode_vars = vec![];
+
+    let mut opcode_index = 0;
+    let mut rng = rand::thread_rng();
+    let mut instr_map: HashMap<B, String> = HashMap::new();
+
+    let mut prefix: Vec<(String, Option<u32>)> = conf.instructions.iter().map(|(s,m)| (s.to_string(), *m)).collect();
+    let mut suffix = prefix.split_off(core_instruction_index + 1);
+    let (core_instruction, core_opcode_mask) = prefix.pop().expect("Bad index for core instruction");
+
+    // Produce a single continuation for the prefix...
+    for (i, (instruction, opcode_mask)) in prefix.iter().enumerate() {
+        let mut random_attempts_left = conf.max_retries;
+        let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
+        loop {
+            let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
+            instr_map.insert(opcode, description);
+            let mask_str = match opcode_mask {
+                None => "none".to_string(),
+                Some(m) => format!("{:#010x}", m),
+            };
+            println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+            let (opcode_var, op_checkpoint) =
+                setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
+            let mut continuations = run_model_instruction(
+                target,
+                &run_instruction_function,
+                conf.num_threads,
+                conf.shared_state,
+                &frame,
+                op_checkpoint,
+                opcode_var,
+                stop_conds,
+                conf.dump_all_events,
+                &conf.assertion_reports,
+            );
+            let num_continuations = continuations.len();
+            if num_continuations > 0 {
+                let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
+                println!("{} successful execution(s)", num_continuations);
+                opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                opcode_index += 1;
+                frame = f;
+                checkpoint = c;
+                break;
+            } else {
+                println!("No successful executions");
+                if repeat {
+                    random_attempts_left -= 1;
+                    if random_attempts_left == 0 {
+                        return Err(Box::new(GenerationError("Retried too many times".to_string())));
+                    }
+                } else {
+                    return Err(Box::new(GenerationError("Unable to continue".to_string())));
+                }
+            }
+        }
+    }
+
+    // ...then take all feasible paths through the core instruction...
+    let mut core_continuations = {
+        let i = core_instruction_index;
+        let mut random_attempts_left = conf.max_retries;
+        let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
+        loop {
+            let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, &core_instruction, register_bias);
+            instr_map.insert(opcode, description);
+            let mask_str = match core_opcode_mask {
+                None => "none".to_string(),
+                Some(m) => format!("{:#010x}", m),
+            };
+            println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+            let (opcode_var, op_checkpoint) =
+                setup_opcode(conf.shared_state, &frame, opcode, core_opcode_mask, checkpoint.clone());
+            let continuations = run_model_instruction(
+                target,
+                &run_instruction_function,
+                conf.num_threads,
+                conf.shared_state,
+                &frame,
+                op_checkpoint,
+                opcode_var,
+                stop_conds,
+                conf.dump_all_events,
+                &conf.assertion_reports,
+            );
+            let num_continuations = continuations.len();
+            if num_continuations > 0 {
+                println!("{} successful execution(s)", num_continuations);
+                opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                opcode_index += 1;
+                break continuations;
+            } else {
+                println!("No successful executions");
+                if repeat {
+                    random_attempts_left -= 1;
+                    if random_attempts_left == 0 {
+                        return Err(Box::new(GenerationError("Retried too many times".to_string())));
+                    }
+                } else {
+                    return Err(Box::new(GenerationError("Unable to continue".to_string())));
+                }
+            }
+        }
+    };
+
+    // ...and for each run the suffix.
+    // The first time through we pick a feasible set of instructions.
+    'cont: for (group_i, (mut frame, mut checkpoint)) in core_continuations.drain(..).enumerate() {
+        for (i, (instruction, opcode_mask)) in suffix.iter_mut().enumerate() {
+            let mut random_attempts_left = conf.max_retries;
+            let stop_conds = if conf.exceptions_allowed_at.contains(&(i + core_instruction_index + 1)) { conf.stop_conditions } else { &all_stop_conditions };
+            loop {
+                let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
+                instr_map.insert(opcode, description);
+                let mask_str = match opcode_mask {
+                    None => "none".to_string(),
+                    Some(m) => format!("{:#010x}", m),
+                };
+                println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+                let (opcode_var, op_checkpoint) =
+                    setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
+                let mut continuations = run_model_instruction(
+                    target,
+                    &run_instruction_function,
+                    conf.num_threads,
+                    conf.shared_state,
+                    &frame,
+                    op_checkpoint,
+                    opcode_var,
+                    stop_conds,
+                    conf.dump_all_events,
+                    &conf.assertion_reports,
+                );
+                let num_continuations = continuations.len();
+                if num_continuations > 0 {
+                    let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
+                    println!("{} successful execution(s)", num_continuations);
+                    opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                    opcode_index += 1;
+                    frame = f;
+                    checkpoint = c;
+                    *instruction = format!("{:#x}", opcode.lower_u64());
+                    break;
+                } else {
+                    println!("No successful executions");
+                    if i == 0 {
+                        if repeat {
+                            random_attempts_left -= 1;
+                            if random_attempts_left == 0 {
+                                return Err(Box::new(GenerationError("Retried too many times".to_string())));
+                            }
+                            println!("(retrying)");
+                        } else {
+                            return Err(Box::new(GenerationError("Unable to continue".to_string())));
+                        }
+                    } else {
+                        println!("(skipping)");
+                        continue 'cont;
+                    }
+                }
+            }
+        }
+
+        let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
+
+        println!("Complete");
+
+        if conf.dump_events {
+            let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
+            let mut events = trace.to_vec();
+            let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
+            write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+        }
+
+        println!("Initial state extracted from events:");
+        let initial_state = extract_state::interrogate_model(
+            target,
+            conf.isa_config,
+            checkpoint,
+            conf.shared_state,
+            &conf.initial_frame,
+            conf.register_types,
+            conf.symbolic_regions,
+            conf.symbolic_code_regions,
+        )?;
+        let basename_number = format!("{}-{}", basename, group_i);
+        generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)?;
+        generate_object::build_elf_file(conf.isa_config, &basename_number)?;
+    }
 
     Ok(())
 }
