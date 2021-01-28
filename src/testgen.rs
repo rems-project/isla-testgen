@@ -676,7 +676,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
             conf.symbolic_regions,
             conf.symbolic_code_regions,
         )?;
-        let basename_number = format!("{}-{}", basename, group_i);
+        let basename_number = format!("{}-{:03}", basename, group_i + 1);
         generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)?;
         generate_object::build_elf_file(conf.isa_config, &basename_number)?;
     }
