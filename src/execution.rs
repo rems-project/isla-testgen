@@ -79,7 +79,7 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp 
 struct SeqMemory {
     translation_table: Option<TranslationTableInfo>,
     read_ifetch: EnumMember,
-    read_exclusive: EnumMember,
+    read_exclusives: Vec<EnumMember>,
     memory_var: Sym,
     tag_memory_var: Sym,
 }
@@ -121,7 +121,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             Val::Enum(e) => {
                 if *e == self.read_ifetch {
                     SmtKind::ReadInstr
-                } else if *e == self.read_exclusive {
+                } else if self.read_exclusives.iter().any(|en| *e == *en) {
                     // We produce a dummy read so that failed store exclusives still get address
                     // constraints, but the memory must be writable.
                     SmtKind::WriteData
@@ -401,6 +401,17 @@ fn setup_val<'a, B: BV>(
     }
 }
 
+fn get_enum<'ir, B: BV>(
+    shared_state: &SharedState<'ir, B>,
+    solver: &mut Solver<B>,
+    sym: &str,
+) -> EnumMember {
+    let zsym = zencode::encode(sym);
+    let name = shared_state.symtab.get(&zsym).unwrap_or_else(|| panic!("Enum member {} missing", sym));
+    let (pos, size) = shared_state.enum_members.get(&name).unwrap();
+    EnumMember { enum_id: solver.get_enum(*size), member: *pos }
+}
+
 pub fn setup_init_regs<'ir, B: BV, T: Target>(
     shared_state: &SharedState<'ir, B>,
     frame: Frame<'ir, B>,
@@ -448,12 +459,9 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     };
 
     let memory = solver.fresh();
-    let read_ifetch_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
-    let (read_ifetch_pos, read_ifetch_size) = shared_state.enum_members.get(&read_ifetch_name).unwrap();
-    let read_ifetch = EnumMember { enum_id: solver.get_enum(*read_ifetch_size), member: *read_ifetch_pos };
-    let read_exclusive_name = shared_state.symtab.get("zRead_exclusive").expect("Read_ifetch missing");
-    let (read_exclusive_pos, read_exclusive_size) = shared_state.enum_members.get(&read_exclusive_name).unwrap();
-    let read_exclusive = EnumMember { enum_id: solver.get_enum(*read_exclusive_size), member: *read_exclusive_pos };
+    let read_ifetch = get_enum(shared_state, &mut solver, "Read_ifetch");
+    let read_exclusives: Vec<EnumMember> =
+        ["Read_exclusive", "Read_exclusive_acquire"].iter().map(|s| get_enum(shared_state, &mut solver, s)).collect();
     let tag_memory_var = solver.fresh();
 
     solver.add(smtlib::Def::DeclareConst(
@@ -468,7 +476,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     target.init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
 
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { translation_table: target.translation_table_info(), read_ifetch, read_exclusive, memory_var: memory, tag_memory_var });
+        Box::new(SeqMemory { translation_table: target.translation_table_info(), read_ifetch, read_exclusives, memory_var: memory, tag_memory_var });
     local_frame.memory_mut().set_client_info(memory_info);
     local_frame.memory().log();
 
