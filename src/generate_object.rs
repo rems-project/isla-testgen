@@ -284,20 +284,38 @@ fn get_exit_address<B: BV>(
     }
 }
 
-// If we pretend during symbol execution that there's no address
-// translation then ESR_EL1 may indicate the wrong translation
-// stage/level, so mask those out.
-fn esr_el1_fixup_mask(
+fn write_cap_esr_check(
+    asm_file: &mut File,
     val: u64,
-) -> u64 {
+    scratch_1: u32,
+    scratch_2: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
     let ec = (val & 0x0000_0000_fc00_0000) >> 26;
-    match ec {
-        0b100000 => 0b1000_0011, // S1PTW, bottom bits of IFSC
-        0b100001 => 0b1000_0011, // S1PTW, bottom bits of IFSC
-        0b100100 => 0b1000_0011, // S1PTW, bottom bits of DFSC
-        0b100101 => 0b1000_0011, // S1PTW, bottom bits of DFSC
-        _ => 0,
+    writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", scratch_1)?;
+    writeln!(asm_file, "\tldr x{}, [x{}]", scratch_1, scratch_1)?;
+    let mask: u64 =
+    // Atomics with bad bounds and no store permissions might fault
+    // with a bounds fault (e.g., in the ASL) or a permission fault
+    // (in the fast model), cope with either.
+        if (ec == 0b100100 || ec == 0b100101) && val & 0b111111 == 0b101010 && val & 1 << 6 == 0 { 0b11000001 }
+    else {
+        match ec {
+            // If we pretend during symbol execution that there's no address
+            // translation then ESR_EL1 may indicate the wrong translation
+            // stage/level, so mask those out.
+            0b100000 | 0b100001 | 0b100100 | 0b100101 =>
+                if val & 0b100000 == 0 { 0b1000_0011 } else { 0b1000_0000 }, // S1PTW, bottom bits of IFSC / DFSC
+            _ => 0
+        }
+    };
+    if mask != 0 {
+        writeln!(asm_file, "\tmov x{}, {:#x}", scratch_2, mask)?;
+        writeln!(asm_file, "\torr x{}, x{}, x{}", scratch_1, scratch_1, scratch_2)?;
     }
+    writeln!(asm_file, "\tldr x{}, ={:#x}", scratch_2, val | mask)?;
+    writeln!(asm_file, "\tcmp x{}, x{}", scratch_2, scratch_1)?;
+    writeln!(asm_file, "\tb.ne comparison_fail")?;
+    Ok(())
 }
 
 pub fn write_main_memory<B: BV>(
@@ -770,14 +788,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         for (reg, value) in &post_system_registers {
             if reg == "ESR_EL1" {
                 let value = value.lower_u64();
-                let mask = esr_el1_fixup_mask(value);
-                writeln!(asm_file, "\tldr x{}, =esr_el1_dump_address", exit_reg)?;
-                writeln!(asm_file, "\tldr x{}, [x{}]", exit_reg, exit_reg)?;
-                writeln!(asm_file, "\tmov x{}, {:#x}", entry_reg, mask)?;
-                writeln!(asm_file, "\torr x{}, x{}, x{}", exit_reg, exit_reg, entry_reg)?;
-                writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value | mask)?;
-                writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
-                writeln!(asm_file, "\tb.ne comparison_fail")?;
+                write_cap_esr_check(&mut asm_file, value, entry_reg, exit_reg)?;
             } else {
                 let actual_reg = if reg == "PCC" {
                     assert!(target.run_in_el0());
