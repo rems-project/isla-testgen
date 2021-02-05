@@ -699,6 +699,7 @@ pub fn make_asm_files<B: BV, T: Target>(
 	        else if  *reg == "CCTLR_EL2" { ("S3_4_C1_C2_2", " // CCTLR_EL2") }
 	        else if  *reg == "CCTLR_EL1" { ("S3_0_C1_C2_2", " // CCTLR_EL1") }
 	        else if  *reg == "CCTLR_EL0" { ("S3_3_C1_C2_2", " // CCTLR_EL0") }
+                else if  *reg == "CSCR_EL3"  { ("S3_6_C1_C2_3", " // CSCR_EL3")  }
 	        else { (reg.as_str(), "") };
             writeln!(asm_file, "\tmsr {}, x{}{}", name, entry_reg, comment)?;
         }

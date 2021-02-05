@@ -195,6 +195,7 @@ impl Target for Morello {
             sys_regs.push(("DDC_EL3".to_string(), vec![]));
             sys_regs.push(("RDDC_EL0".to_string(), vec![]));
             sys_regs.push(("RSP_EL0".to_string(), vec![]));
+            sys_regs.push(("CSCR_EL3".to_string(), vec![]));
         }
 	if self.run_in_el0() {
 	    sys_regs.push(("PSTATE".to_string(), vec![GVAccessor::Field("EL".to_string())]));
