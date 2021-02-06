@@ -107,8 +107,13 @@ fn instruction_opcode<B: BV>(
         (opcode.to_le_bytes(), true, description)
     } else if instruction.starts_with("0x") {
         println!("Instruction {}", instruction);
-        match u32::from_str_radix(&instruction[2..], 16) {
-            Ok(opcode) => (opcode.to_le_bytes(), false, instruction.to_string()),
+        let (opcode_str, description) =
+            match instruction.find(' ') {
+                None => (instruction, instruction),
+                Some(i) => (&instruction[..i], &instruction[i+1..]),
+            };
+        match u32::from_str_radix(&opcode_str[2..], 16) {
+            Ok(opcode) => (opcode.to_le_bytes(), false, description.to_string()),
             Err(e) => {
                 eprintln!("Could not parse instruction: {}", e);
                 exit(1)
@@ -609,7 +614,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
             for (i, (instruction, opcode_mask)) in current_suffix.iter_mut().enumerate() {
                 let stop_conds = if conf.exceptions_allowed_at.contains(&(i + core_instruction_index + 1)) { conf.stop_conditions } else { &all_stop_conditions };
                 let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
-                *instruction = format!("{:#x}", opcode.lower_u64());
+                *instruction = format!("{:#x} {}", opcode.lower_u64(), description);
                 worth_repeating = worth_repeating || repeat;
                 println!("repeat {} worth {}", repeat, worth_repeating);
                 instr_map.insert(opcode, description);
