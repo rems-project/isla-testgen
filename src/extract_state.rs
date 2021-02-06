@@ -117,7 +117,7 @@ pub struct PrePostStates<'ir, B> {
     pub pre_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)>,
     pub pre_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
     pub post_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
-    pub post_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)>,
+    pub post_tag_memory: Vec<(memory::Address, bool)>,
     pub post_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
 }
 
@@ -663,7 +663,14 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         })
         .collect();
     let post_memory = batch_memory(&current_memory, &(|x: &Option<u8>| *x), 1);
-    let post_tag_memory = batch_memory(&current_tag_memory, &(|x: &Option<bool>| *x), 16);
+
+    let mut final_symbolic_tag_memory: Vec<(memory::Address, bool)> = vec![];
+
+    for (address, tag) in &current_tag_memory {
+        if let Some(tag) = tag {
+            final_symbolic_tag_memory.push((*address, *tag));
+        }
+    }
 
     Ok(PrePostStates {
         pre_memory: initial_symbolic_memory,
@@ -672,6 +679,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         pre_registers,
         post_registers,
         post_memory,
-        post_tag_memory,
+        post_tag_memory: final_symbolic_tag_memory,
     })
 }

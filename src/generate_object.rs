@@ -464,21 +464,17 @@ pub fn write_capability_data<B: BV, T: Target>(
     writeln!(asm_file, "\t.dword 0")?;
 
     writeln!(asm_file, "final_tag_set_locations:")?;
-    for (region, tags) in pre_post_states.post_tag_memory.iter() {
-        for (i, tag) in tags.iter().enumerate() {
-            if *tag {
-                writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
-            }
+    for (addr, tag) in pre_post_states.post_tag_memory.iter() {
+        if *tag {
+            writeln!(asm_file, "\t.dword {:#018x}", addr)?;
         }
     }
     writeln!(asm_file, "\t.dword 0")?;
 
     writeln!(asm_file, "final_tag_unset_locations:")?;
-    for (region, tags) in pre_post_states.post_tag_memory.iter() {
-        for (i, tag) in tags.iter().enumerate() {
-            if !*tag {
-                writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
-            }
+    for (addr, tag) in pre_post_states.post_tag_memory.iter() {
+        if !*tag {
+            writeln!(asm_file, "\t.dword {:#018x}", addr)?;
         }
     }
     writeln!(asm_file, "\t.dword 0")?;
