@@ -497,7 +497,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
     let mut instr_map: HashMap<B, String> = HashMap::new();
 
     let mut prefix: Vec<(String, Option<u32>)> = conf.instructions.iter().map(|(s,m)| (s.to_string(), *m)).collect();
-    let mut suffix = prefix.split_off(core_instruction_index + 1);
+    let suffix = prefix.split_off(core_instruction_index + 1);
     let (core_instruction, core_opcode_mask) = prefix.pop().expect("Bad index for core instruction");
 
     // Produce a single continuation for the prefix...
@@ -597,13 +597,21 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
     };
 
     // ...and for each run the suffix.
-    // The first time through we pick a feasible set of instructions.
-    'cont: for (group_i, (mut frame, mut checkpoint)) in core_continuations.drain(..).enumerate() {
-        for (i, (instruction, opcode_mask)) in suffix.iter_mut().enumerate() {
-            let mut random_attempts_left = conf.max_retries;
-            let stop_conds = if conf.exceptions_allowed_at.contains(&(i + core_instruction_index + 1)) { conf.stop_conditions } else { &all_stop_conditions };
-            loop {
+    // We retry if the instructions we chose resulted in no feasible executions
+    loop {
+        let mut worth_repeating = false;
+        let mut had_success = false;
+        let mut random_attempts_left = conf.max_retries;
+        let mut current_suffix = suffix.clone();
+
+        'cont: for (group_i, (mut frame, mut checkpoint)) in core_continuations.drain(..).enumerate() {
+            println!("Core instruction behaviour {}", group_i + 1);
+            for (i, (instruction, opcode_mask)) in current_suffix.iter_mut().enumerate() {
+                let stop_conds = if conf.exceptions_allowed_at.contains(&(i + core_instruction_index + 1)) { conf.stop_conditions } else { &all_stop_conditions };
                 let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
+                *instruction = format!("{:#x}", opcode.lower_u64());
+                worth_repeating = worth_repeating || repeat;
+                println!("repeat {} worth {}", repeat, worth_repeating);
                 instr_map.insert(opcode, description);
                 let mask_str = match opcode_mask {
                     None => "none".to_string(),
@@ -632,53 +640,58 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                     opcode_index += 1;
                     frame = f;
                     checkpoint = c;
-                    *instruction = format!("{:#x}", opcode.lower_u64());
-                    break;
                 } else {
-                    println!("No successful executions");
-                    if i == 0 {
-                        if repeat {
-                            random_attempts_left -= 1;
-                            if random_attempts_left == 0 {
-                                return Err(Box::new(GenerationError("Retried too many times".to_string())));
-                            }
-                            println!("(retrying)");
-                        } else {
-                            return Err(Box::new(GenerationError("Unable to continue".to_string())));
-                        }
-                    } else {
-                        println!("(skipping)");
-                        continue 'cont;
-                    }
+                    println!("(skipping core instruction behaviour {})", group_i + 1);
+                    continue 'cont;
                 }
+            }
+
+            let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
+
+            println!("Complete");
+
+            if conf.dump_events {
+                let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
+                let mut events = trace.to_vec();
+                let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
+                write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+            }
+            
+            println!("Initial state extracted from events:");
+            match extract_state::interrogate_model(
+                target,
+                conf.isa_config,
+                checkpoint,
+                conf.shared_state,
+                &conf.initial_frame,
+                conf.register_types,
+                conf.symbolic_regions,
+                conf.symbolic_code_regions,
+            ) {
+                Ok(initial_state) => {
+                    had_success = true;
+                    let basename_number = format!("{}-{:03}", basename, group_i + 1);
+                    generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)
+                        .map_err(|e| e.to_string())
+                        .and_then(
+                            |_| generate_object::build_elf_file(conf.isa_config, &basename_number)
+                                .map_err(|e| e.to_string()))
+                        .unwrap_or_else(
+                            |error| println!("Failed to construct teset: {}", error));
+                }
+                Err(error) => println!("Failed to extract state: {}", error),
             }
         }
 
-        let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
-
-        println!("Complete");
-
-        if conf.dump_events {
-            let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
-            let mut events = trace.to_vec();
-            let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-            write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+        if had_success { break; };
+        if !worth_repeating {
+            return Err(Box::new(GenerationError("Unable to continue".to_string())));
         }
 
-        println!("Initial state extracted from events:");
-        let initial_state = extract_state::interrogate_model(
-            target,
-            conf.isa_config,
-            checkpoint,
-            conf.shared_state,
-            &conf.initial_frame,
-            conf.register_types,
-            conf.symbolic_regions,
-            conf.symbolic_code_regions,
-        )?;
-        let basename_number = format!("{}-{:03}", basename, group_i + 1);
-        generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)?;
-        generate_object::build_elf_file(conf.isa_config, &basename_number)?;
+        random_attempts_left -= 1;
+        if random_attempts_left == 0 {
+            return Err(Box::new(GenerationError("Retried too many times".to_string())));
+        }
     }
 
     Ok(())
