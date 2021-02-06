@@ -104,6 +104,12 @@ fn write_aldr_off(asm_file: &mut File, ct: u32, cn: u32, imm: u32) -> Result<(),
     Ok(())
 }
 
+fn write_chktgd(asm_file: &mut File, cn: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0xc2c23001 | cn << 5;
+    writeln!(asm_file, "\t.inst {:#010x} // chktgd c{}", v, cn)?;
+    Ok(())
+}
+
 fn write_sctag(asm_file: &mut File, cd: u32, cn: u32, xm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0xc2c08000 | xm << 16 | cn << 5 | cd;
     writeln!(asm_file, "\t.inst {:#010x} // sctag c{}, c{}, c{}", v, cd, cn, xm)?;
@@ -451,13 +457,33 @@ pub fn write_capability_data<B: BV, T: Target>(
                 writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
             }
         }
-        }
+    }
     for address in extra_tags {
         writeln!(asm_file, "\t.dword {}", address)?;
     }
     writeln!(asm_file, "\t.dword 0")?;
 
-    writeln!(asm_file, "\tesr_el1_dump_address:")?;
+    writeln!(asm_file, "final_tag_set_locations:")?;
+    for (region, tags) in pre_post_states.post_tag_memory.iter() {
+        for (i, tag) in tags.iter().enumerate() {
+            if *tag {
+                writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
+            }
+        }
+    }
+    writeln!(asm_file, "\t.dword 0")?;
+
+    writeln!(asm_file, "final_tag_unset_locations:")?;
+    for (region, tags) in pre_post_states.post_tag_memory.iter() {
+        for (i, tag) in tags.iter().enumerate() {
+            if !*tag {
+                writeln!(asm_file, "\t.dword {:#018x}", region.start + i as u64)?;
+            }
+        }
+    }
+    writeln!(asm_file, "\t.dword 0")?;
+
+    writeln!(asm_file, "esr_el1_dump_address:")?;
     writeln!(asm_file, "\t.dword 0")?;
     Ok(())
 }
@@ -826,6 +852,27 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tcmp x0, x2")?;
         writeln!(asm_file, "\tb.ne check_data_loop{}", name)?;
         name += 1;
+    }
+    if target.has_capabilities() {
+        writeln!(asm_file, "\tldr x0, =final_tag_set_locations")?;
+        writeln!(asm_file, "check_set_tags_loop:")?;
+        writeln!(asm_file, "\tldr x1, [x0], #8")?;
+        writeln!(asm_file, "\tcbz x1, check_set_tags_end")?;
+        write_ldr_off(&mut asm_file, 3, 1, 0)?;
+        write_chktgd(&mut asm_file, 3)?;
+        writeln!(asm_file, "\tb.cc comparison_fail")?;
+        writeln!(asm_file, "\tb check_set_tags_loop")?;
+        writeln!(asm_file, "check_set_tags_end:")?;
+        
+        writeln!(asm_file, "\tldr x0, =final_tag_unset_locations")?;
+        writeln!(asm_file, "check_unset_tags_loop:")?;
+        writeln!(asm_file, "\tldr x1, [x0], #8")?;
+        writeln!(asm_file, "\tcbz x1, check_unset_tags_end")?;
+        write_ldr_off(&mut asm_file, 3, 1, 0)?;
+        write_chktgd(&mut asm_file, 3)?;
+        writeln!(asm_file, "\tb.cs comparison_fail")?;
+        writeln!(asm_file, "\tb check_unset_tags_loop")?;
+        writeln!(asm_file, "check_unset_tags_end:")?;
     }
     writeln!(asm_file, "\t/* Done print message */")?;
     if target.has_capabilities() {
