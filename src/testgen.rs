@@ -555,7 +555,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
     }
 
     // ...then take all feasible paths through the core instruction...
-    let mut core_continuations = {
+    let core_continuations = {
         let i = core_instruction_index;
         let mut random_attempts_left = conf.max_retries;
         let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
@@ -609,14 +609,15 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
         let mut random_attempts_left = conf.max_retries;
         let mut current_suffix = suffix.clone();
 
-        'cont: for (group_i, (mut frame, mut checkpoint)) in core_continuations.drain(..).enumerate() {
+        'cont: for (group_i, (frame, checkpoint)) in core_continuations.iter().enumerate() {
+            let mut frame = frame.clone();
+            let mut checkpoint = checkpoint.clone();
             println!("Core instruction behaviour {}", group_i + 1);
             for (i, (instruction, opcode_mask)) in current_suffix.iter_mut().enumerate() {
                 let stop_conds = if conf.exceptions_allowed_at.contains(&(i + core_instruction_index + 1)) { conf.stop_conditions } else { &all_stop_conditions };
                 let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
                 *instruction = format!("{:#x} {}", opcode.lower_u64(), description);
                 worth_repeating = worth_repeating || repeat;
-                println!("repeat {} worth {}", repeat, worth_repeating);
                 instr_map.insert(opcode, description);
                 let mask_str = match opcode_mask {
                     None => "none".to_string(),
@@ -682,13 +683,14 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                             |_| generate_object::build_elf_file(conf.isa_config, &basename_number)
                                 .map_err(|e| e.to_string()))
                         .unwrap_or_else(
-                            |error| println!("Failed to construct teset: {}", error));
+                            |error| println!("Failed to construct test: {}", error));
                 }
                 Err(error) => println!("Failed to extract state: {}", error),
             }
         }
 
         if had_success { break; };
+        println!("Instruction sequence suffix produced no tests");
         if !worth_repeating {
             return Err(Box::new(GenerationError("Unable to continue".to_string())));
         }
@@ -697,6 +699,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
         if random_attempts_left == 0 {
             return Err(Box::new(GenerationError("Retried too many times".to_string())));
         }
+        println!("Trying new suffix");
     }
 
     Ok(())
