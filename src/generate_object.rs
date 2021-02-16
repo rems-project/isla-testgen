@@ -116,6 +116,12 @@ fn write_sctag(asm_file: &mut File, cd: u32, cn: u32, xm: u32) -> Result<(), Box
     Ok(())
 }
 
+fn write_seal_imm(asm_file: &mut File, cd: u32, cn: u32, form: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0xc2c31000 | form << 13 | cn << 5 | cd;
+    writeln!(asm_file, "\t.inst {:#010x} // seal c{}, c{}, {}", v, cd, cn, form)?;
+    Ok(())
+}
+
 fn write_str_off(asm_file: &mut File, ct: u32, xn: u32, imm: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0xc2000000 | imm << 10 | xn << 5 | ct;
     writeln!(asm_file, "\t.inst {:#010x} // str c{}, [x{}, #{}]", v, ct, xn, imm)?;
@@ -131,6 +137,12 @@ fn write_cpy(asm_file: &mut File, cd: u32, cn: u32) -> Result<(), Box<dyn std::e
 fn write_br(asm_file: &mut File, cn: u32) -> Result<(), Box<dyn std::error::Error>> {
     let v: u32 = 0b11_0000101100_00100_0_0_100_00000_0_0_0_00 | cn << 5;
     writeln!(asm_file, "\t.inst {:#010x} // br c{}", v, cn)?;
+    Ok(())
+}
+
+fn write_brr(asm_file: &mut File, cn: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let v: u32 = 0b11_0000101100_00100_0_0_100_00000_0_0_0_11 | cn << 5;
+    writeln!(asm_file, "\t.inst {:#010x} // brr c{}", v, cn)?;
     Ok(())
 }
 
@@ -520,7 +532,8 @@ fn write_el1_vector(
     write_scvalue(asm_file, scratch_reg_2, scratch_reg_2, scratch_reg_1)?;
     write_aldr_off(asm_file, scratch_reg_1, scratch_reg_2, 0)?;
     write_add_imm(asm_file, scratch_reg_1, scratch_reg_1, table_offset)?;
-    write_br(asm_file, scratch_reg_1)?;
+    write_seal_imm(asm_file, scratch_reg_1, scratch_reg_1, 1)?;
+    write_brr(asm_file, scratch_reg_1)?;
     Ok(())
 }
 
