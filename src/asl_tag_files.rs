@@ -190,6 +190,11 @@ impl Field {
             }
         }
     }
+
+    fn describe(&self, val: u32) -> String {
+        let len = self.high + 1 - self.low;
+        format!("{0}:{1:02$b}", self.name, (val as u64 >> self.low) & ((1 << len) - 1), len as usize)
+    }
 }
 
 struct Diagram {
@@ -223,6 +228,15 @@ impl Diagram {
     fn matches(&self, val: u32) -> bool {
         self.patterns.iter().all(|f| f.matches(val))
     }
+
+    fn decode(&self, val: u32) -> String {
+        let fields: Vec<String> =
+            self.patterns.iter()
+            .map(|f| f.describe(val))
+            .collect();
+        format!("{} {}", self.name, fields.join(" "))
+    }
+
 }
 
 #[derive(Default)]
@@ -265,9 +279,9 @@ impl Encodings {
         diagrams[i].random(register_bias)
     }
 
-    pub fn search(&self, encoding: Encoding, opcode: u32) -> Vec<&str> {
+    pub fn search(&self, encoding: Encoding, opcode: u32) -> Vec<String> {
         let diagrams = self.get(encoding);
-        diagrams.iter().filter_map(|d| if d.matches(opcode) { Some(d.name.as_str()) } else { None }).collect()
+        diagrams.iter().filter_map(|d| if d.matches(opcode) { Some(d.decode(opcode)) } else { None }).collect()
     }
 }
 
