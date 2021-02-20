@@ -16,7 +16,7 @@ export RUST_BACKTRACE=1
 target/release/isla-testgen -a morello -T 1 -C morello.toml -A ../arm-morello-dropzone/ir/morello.ir \
   -t ../arm-morello-dropzone/2020-09-02_asl_morello/v8a64.tag -t ../arm-morello-dropzone/2020-09-02_asl_morello/siris.tag \
   --max-retries 20 -k Halt -k __SleepRequest -k ConstrainUnpredictable \
-  -k AArch64_TakeException,__FetchInstr -k AArch64_TakeException,post_toplevel_check \
+  -k AArch64_TakeException,__FetchInstr \
   -k AArch64_AddressSizeFault,AArch64_TranslateAddressS1Off \
   --exclude /pac/  --exclude /vector/ --exclude /float/ --exclude /pointer/mc --exclude /tags/mc \
   --exclude integer/crc \

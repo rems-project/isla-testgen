@@ -103,7 +103,9 @@ impl Target for Aarch64 {
         "Step_CPU".to_string()
     }
     fn exception_stop_functions() -> Vec<String> {
-        vec!["AArch64_TakeException".to_string()]
+        vec!["AArch64_TakeException".to_string(),
+             "AArch64_TakeException,post_toplevel_check".to_string(),
+        ]
     }
     fn postprocess<'ir, B: BV>(&self,
         _shared_state: &SharedState<'ir, B>,
