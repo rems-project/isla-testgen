@@ -19,7 +19,7 @@ target/release/isla-testgen -a morello -T 1 -C morello.toml -A ../arm-morello-dr
   --max-retries 20 -k Halt -k __SleepRequest -k ConstrainUnpredictable \
   -k AArch64_TakeException,__FetchInstr \
   -k AArch64_AddressSizeFault,AArch64_TranslateAddressS1Off \
-  -k UndefinedFault \
+  -k AArch64_UndefinedFault \
   --exclude /pac/  --exclude /vector/ --exclude /float/ --exclude /pointer/mc --exclude /tags/mc \
   --exclude integer/crc \
   --exclude '^bl?ra:' \
