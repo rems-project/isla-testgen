@@ -5,6 +5,7 @@
 # ldct and stct not supported without memory setup
 # eret needs more registers set
 # The AddressSizeFault needs to be excluded if we're lying about address translation
+# Don't even want to think about UndefinedFault
 
 #  --exclude memory/ordered-rcpc --exclude lda_stl --exclude memory/exclusive --exclude memory/atomicops \
 #  --exclude '^CAS' --exclude '^LDAP?RB?' --exclude '^LDA?X[PR]' --exclude '^STLRB?' --exclude '^STL?X[PR]' --exclude '^SWP' \
@@ -18,6 +19,7 @@ target/release/isla-testgen -a morello -T 1 -C morello.toml -A ../arm-morello-dr
   --max-retries 20 -k Halt -k __SleepRequest -k ConstrainUnpredictable \
   -k AArch64_TakeException,__FetchInstr \
   -k AArch64_AddressSizeFault,AArch64_TranslateAddressS1Off \
+  -k UndefinedFault \
   --exclude /pac/  --exclude /vector/ --exclude /float/ --exclude /pointer/mc --exclude /tags/mc \
   --exclude integer/crc \
   --exclude '^bl?ra:' \
