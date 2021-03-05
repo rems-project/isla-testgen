@@ -603,10 +603,10 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
 
     // ...and for each run the suffix.
     // We retry if the instructions we chose resulted in no feasible executions
+    let mut random_attempts_left = conf.max_retries;
     loop {
         let mut worth_repeating = false;
         let mut had_success = false;
-        let mut random_attempts_left = conf.max_retries;
         let mut current_suffix = suffix.clone();
 
         'cont: for (group_i, (frame, checkpoint)) in core_continuations.iter().enumerate() {
