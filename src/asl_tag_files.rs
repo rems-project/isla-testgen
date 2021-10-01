@@ -289,9 +289,10 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
     let encoding = lines.next().expect("End of file when encoding expected").parse::<Encoding>()?;
 
     let mut bits_found: u32 = 0;
+    let bits_expected: u32 = match encoding { Encoding::T16 => 16, _ => 32 };
     let mut patterns = Vec::new();
 
-    while bits_found < 32 {
+    while bits_found < bits_expected {
         match lines.next() {
             Some(line) => {
                 let field = line.parse::<Field>()?;
@@ -301,7 +302,7 @@ fn read_diagram(name: &str, lines: &mut dyn Iterator<Item = String>, encodings: 
             None => return Err(format!("End of file during diagram for {}", name)),
         }
     }
-    if bits_found > 32 {
+    if bits_found > bits_expected {
         return Err(format!("Too many bits in diagram for {}", name));
     }
     patterns.sort_by_key(|f| f.low);
