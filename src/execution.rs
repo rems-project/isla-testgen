@@ -39,20 +39,27 @@ use std::time::Instant;
 use crate::extract_state::GVAccessor;
 use crate::target::{Target, TranslationTableInfo};
 
-use isla_lib::concrete::BV;
+use isla_lib::bitvector::BV;
 use isla_lib::error::ExecError;
 use isla_lib::executor;
-use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions};
+use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions, TaskState};
 use isla_lib::ir::*;
+use isla_lib::ir::source_loc::SourceLoc;
 use isla_lib::memory::{Memory, SmtKind};
+use isla_lib::register::RegisterBindings;
 use isla_lib::simplify::write_events;
 use isla_lib::smt;
 use isla_lib::smt::smtlib;
+use isla_lib::smt::smtlib::bits64;
 use isla_lib::smt::{Checkpoint, Event, Model, SmtResult, Solver, Sym};
 use isla_lib::zencode;
 use isla_lib::{log, log_from};
 
-fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp {
+fn smt_value<B: BV>(v: &Val<B>) -> Result<smtlib::Exp<Sym>, ExecError> {
+    isla_lib::primop_util::smt_value(v, SourceLoc::unknown())
+}
+
+fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, bytes: u64) -> smtlib::Exp<Sym> {
     use smtlib::Exp;
     // TODO: endianness?
     let mut mem_exp = Exp::Select(Box::new(Exp::Var(memory)), Box::new(addr_exp.clone()));
@@ -60,7 +67,7 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp, bytes: u64) -> smtlib::Exp 
         mem_exp = Exp::Concat(
             Box::new(Exp::Select(
                 Box::new(Exp::Var(memory)),
-                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(Exp::Bits64(i as u64, 64)))),
+                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, 64)))),
             )),
             Box::new(mem_exp),
         )
@@ -95,7 +102,6 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         bytes: u32,
         tag: &Option<Val<B>>,
     ) {
-        use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
 
         let read_exp = smt_value(value).unwrap_or_else(|err| panic!("Bad memory read value {:?}: {}", value, err));
@@ -137,7 +143,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             Some(tt_info) => {
                 let tt_prop = crate::target::translation_table_exp(tt_info, read_exp, addr_exp, bytes);
                 let tt_prop = match tag_exp {
-                    Some(tag_exp) => Exp::And(Box::new(Exp::Eq(Box::new(tag_exp), Box::new(Exp::Bits64(0, 1)))), Box::new(tt_prop)),
+                    Some(tag_exp) => Exp::And(Box::new(Exp::Eq(Box::new(tag_exp), Box::new(bits64(0, 1)))), Box::new(tt_prop)),
                     None => tt_prop,
                 };
                 Exp::Ite(Box::new(address_constraint), Box::new(read_prop), Box::new(tt_prop))
@@ -159,7 +165,6 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         bytes: u32,
         tag: &Option<Val<B>>,
     ) {
-        use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
 
         let data_exp = smt_value(data).unwrap_or_else(|err| panic!("Bad memory write value {:?}: {}", data, err));
@@ -174,7 +179,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         for i in 1..bytes {
             mem_exp = Exp::Store(
                 Box::new(mem_exp),
-                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(Exp::Bits64(i as u64, 64)))),
+                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, 64)))),
                 Box::new(Exp::Extract(i * 8 + 7, i * 8, Box::new(data_exp.clone()))),
             )
         }
@@ -187,8 +192,8 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
                 (tag_exp, addr_exp.clone())
             }
             None => (
-                Exp::Bits64(0, 1),
-                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(Exp::Bits64(0xffff_ffff_ffff_fff0u64, 64))),
+                bits64(0, 1),
+                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(bits64(0xffff_ffff_ffff_fff0u64, 64))),
             ),
         };
         let tag_mem_exp =
@@ -210,7 +215,6 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         address: &Val<B>,
         tag: &Val<B>,
     ) {
-        use isla_lib::primop::smt_value;
         use isla_lib::smt::smtlib::{Def, Exp};
 
         let addr_exp =
@@ -237,15 +241,17 @@ enum PCResolved<B: BV> {
 
 // TODO: generalize this so that we can use it in other places where making a register
 // concrete is useful.
-fn resolve_concrete_pc<B: BV>(
-    value: &mut UVal<B>,
+fn resolve_concrete_pc<'ir, B: BV>(
+    registers: &mut RegisterBindings<'ir, B>,
+    pc_id: Name,
+    shared_state: &SharedState<'ir, B>,
     solver: &mut Solver<B>,
 ) -> Result<PCResolved<B>, String> {
     use isla_lib::smt::smtlib::Exp;
     use PCResolved::*;
     
-    match value {
-	UVal::Init(Val::Symbolic(v)) => {
+    match registers.get(pc_id, shared_state, solver, SourceLoc::unknown()).map_err(|e| format!("{}", e))? {
+	Some(Val::Symbolic(v)) => {
 	    if solver.check_sat().is_unsat().map_err(|e| format!("{}", e))? {
 		return Err(String::from("Unsatisfiable in post-processing"));
 	    }
@@ -254,12 +260,12 @@ fn resolve_concrete_pc<B: BV>(
 		model.get_var(*v).map_err(|e| format!("{}", e))?
 	    };
 	    match model_val {
-		Some(Exp::Bits64(result, size)) => {
-		    if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result, size))))
+		Some(Exp::Bits64(result)) => {
+		    if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))))
 			.is_unsat().map_err(|e| format!("{}", e))? {
-			    let bits = B::new(result, size);
+			    let bits = B::new(result.bits, result.len);
 			    // Cache the concrete value
-			    *value = UVal::Init(Val::Bits(bits));
+                            registers.assign(pc_id, Val::Bits(bits), shared_state);
 			    Ok(ConcretePC(bits))
 			} else {
 			    Ok(SymbolicPC(*v))
@@ -268,8 +274,8 @@ fn resolve_concrete_pc<B: BV>(
 		_ => Ok(SymbolicPC(*v))
 	    }
 	}
-	UVal::Init(Val::Bits(bits)) => Ok(ConcretePC(*bits)),
-	_ => Err(format!("Unexpected PC value: {:?}", value))
+	Some(Val::Bits(bits)) => Ok(ConcretePC(*bits)),
+	value => Err(format!("Unexpected PC value: {:?}", value))
     }
 }
 
@@ -290,14 +296,13 @@ fn postprocess<'ir, B: BV, T: Target>(
     // Ensure the new PC can be placed in memory
     // (currently this is used to prevent an exception)
     let pc_id = shared_state.symtab.lookup("z_PC");
-    let pc = local_frame.regs_mut().get_mut(&pc_id).unwrap();
-    match resolve_concrete_pc(pc, &mut solver)? {
+    match resolve_concrete_pc(local_frame.regs_mut(), pc_id, shared_state, &mut solver)? {
 	SymbolicPC(v) => {
 	    let pc_exp = Exp::Var(v);
 	    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver, None);
 	    solver.add(Def::Assert(pc_constraint));
 	    // Alignment constraint
-	    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(Exp::Bits64(0,2)))));
+	    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(bits64(0,2)))));
 	}
 	ConcretePC(b) => {
 	    if let Ok(pc_i) = b.try_into() {
@@ -342,7 +347,7 @@ fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, 
     log!(log::VERBOSE, format!("Model: {:?}", model));
     let opcode = model.get_var(opcode_var).unwrap().unwrap();
     match opcode {
-        smt::smtlib::Exp::Bits64(bits, _) => Ok(bits as u32),
+        smt::smtlib::Exp::Bits64(bits) => Ok(bits.bits as u32),
         _ => Err(String::from("Bad model value")),
     }
 }
@@ -430,33 +435,25 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
             .symtab
             .get(&zencode::encode(&reg))
             .unwrap_or_else(|| panic!("Register {} missing during setup", reg));
-        let ex_val = local_frame
+        let mut ex_val = local_frame
             .regs_mut()
-            .get_mut(&ex_var)
-            .unwrap_or_else(|| panic!("No value for register {} during setup", reg));
-        match ex_val {
-            UVal::Uninit(ty) => {
-                let mut v = executor::symbolic(ty, shared_state, &mut solver)
-                    .unwrap_or_else(|err| panic!("Unable to initialise register {}: {}", reg, err));
-                let var = setup_val(shared_state, &mut v, &ty, accessor, &mut solver);
-                reg_vars.insert(reg, var);
-                *ex_val = UVal::Init(v)
-            }
-            UVal::Init(v) => {
-                let ty = register_types.get(&ex_var).unwrap();
-                let var = setup_val(shared_state, v, &ty, accessor, &mut solver);
-                reg_vars.insert(reg, var);
-            }
-        };
+            .get(ex_var, shared_state, &mut solver, SourceLoc::unknown())
+            .unwrap_or_else(|e| panic!("Fail to lookup register {} during setup: {}", reg, e))
+            .unwrap_or_else(|| panic!("No value for register {} during setup", reg))
+            .clone();
+        let ty = register_types.get(&ex_var).unwrap();
+        let var = setup_val(shared_state, &mut ex_val, &ty, accessor, &mut solver);
+        local_frame.regs_mut().assign(ex_var, ex_val, shared_state);
+        reg_vars.insert(reg, var);
     }
 
     let pc_id = shared_state.symtab.lookup("z_PC");
-    let pc = local_frame.regs_mut().get_mut(&pc_id).unwrap();
     let pc_type = register_types.get(&pc_id).unwrap();
-    match pc_type {
-        Ty::Bits(n) => *pc = UVal::Init(Val::Bits(B::new(init_pc, *n))),
+    let pc = match pc_type {
+        Ty::Bits(n) => Val::Bits(B::new(init_pc, *n)),
         _ => panic!("Bad type for PC: {:?}", pc_type),
     };
+    local_frame.regs_mut().assign(pc_id, pc, shared_state);
 
     let memory = solver.fresh();
     let read_ifetch = get_enum(shared_state, &mut solver, "Read_ifetch");
@@ -486,19 +483,22 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
 pub fn init_model<'ir, B: BV>(
     shared_state: &SharedState<'ir, B>,
     lets: Bindings<'ir, B>,
-    regs: Bindings<'ir, B>,
+    regs: RegisterBindings<'ir, B>,
     memory: &Memory<B>,
+    init_fn_name: &str,
 ) -> (Frame<'ir, B>, Checkpoint<B>) {
     println!("Initialising model...");
 
-    let init_fn = shared_state.symtab.lookup("zinit");
-    let (init_args, _, init_instrs) = shared_state.functions.get(&init_fn).unwrap();
+    let init_fn = shared_state.symtab.lookup(&zencode::encode(init_fn_name));
+    let (init_args, _, init_instrs) = shared_state.functions.get(&init_fn)
+        .unwrap_or_else(|| panic!("Initialisation function \"{}\" not found", init_fn_name));
     let init_result = SegQueue::new();
+    let task_state = TaskState::new();
     let init_task = LocalFrame::new(init_fn, init_args, None, init_instrs)
         .add_lets(&lets)
         .add_regs(&regs)
         .set_memory(memory.clone())
-        .task(0);
+        .task(0, &task_state);
 
     executor::start_single(
         init_task,
@@ -521,14 +521,13 @@ pub fn init_model<'ir, B: BV>(
     (frame, post_init_checkpoint)
 }
 
-pub fn setup_opcode<B: BV>(
-    shared_state: &SharedState<B>,
-    frame: &Frame<B>,
+pub fn setup_opcode<'ir, B: BV>(
+    shared_state: &SharedState<'ir, B>,
+    frame: &Frame<'ir, B>,
     opcode: B,
     opcode_mask: Option<u32>,
     prev_checkpoint: Checkpoint<B>,
 ) -> (Sym, Checkpoint<B>) {
-    use isla_lib::primop::smt_value;
     use isla_lib::smt::smtlib::{Def, Exp, Ty};
     use isla_lib::smt::*;
 
@@ -538,11 +537,7 @@ pub fn setup_opcode<B: BV>(
     let local_frame = executor::unfreeze_frame(frame);
 
     let pc_id = shared_state.symtab.lookup("z_PC");
-    let pc = local_frame.regs().get(&pc_id).unwrap();
-    let pc = match pc {
-        UVal::Init(val) => val,
-        _ => panic!("Uninitialised PC!"),
-    };
+    let pc = local_frame.regs().get_last_if_initialized(pc_id).unwrap();
     // This will add a fake read event, but that shouldn't matter
     let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
@@ -560,13 +555,13 @@ pub fn setup_opcode<B: BV>(
     // doesn't attempt to replace them with a concrete value.)
     if let Some(opcode_mask) = opcode_mask {
         solver.add(Def::Assert(Exp::Eq(
-            Box::new(Exp::Bvand(Box::new(Exp::Var(opcode_var)), Box::new(Exp::Bits64(opcode_mask as u64, 32)))),
-            Box::new(Exp::Bits64(opcode.try_into().unwrap() & opcode_mask as u64, opcode.len())),
+            Box::new(Exp::Bvand(Box::new(Exp::Var(opcode_var)), Box::new(bits64(opcode_mask as u64, 32)))),
+            Box::new(bits64(opcode.try_into().unwrap() & opcode_mask as u64, opcode.len())),
         )));
     } else {
         solver.add(Def::Assert(Exp::Eq(
             Box::new(Exp::Var(opcode_var)),
-            Box::new(Exp::Bits64(opcode.try_into().unwrap(), opcode.len())),
+            Box::new(bits64(opcode.try_into().unwrap(), opcode.len())),
         )));
     }
     let read_exp = smt_value(&read_val).unwrap();
@@ -602,8 +597,9 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
 
     let assertion_events = assertion_reports.is_some();
 
+    let task_state = TaskState::new();
     let mut task =
-        local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, checkpoint);
+        local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, &task_state, checkpoint);
     task.set_stop_conditions(stop_set);
 
     let queue = Arc::new(SegQueue::new());
@@ -712,10 +708,10 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
 
 // Find a couple of scratch registers for the harness, and add a branch to one
 // at the end of the test.
-pub fn finalize<B: BV, T: Target>(
+pub fn finalize<'ir, B: BV, T: Target>(
     target: &T,
-    shared_state: &SharedState<B>,
-    frame: &Frame<B>,
+    shared_state: &SharedState<'ir, B>,
+    frame: &Frame<'ir, B>,
     checkpoint: Checkpoint<B>,
 ) -> (u32, u32, Checkpoint<B>) {
     // Find a couple of unused scratch registers for the harness

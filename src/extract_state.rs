@@ -34,12 +34,13 @@ use std::ops::Range;
 
 use crate::target::Target;
 
-use isla_lib::concrete::BV;
+use isla_lib::bitvector::BV;
 use isla_lib::config::ISAConfig;
 use isla_lib::error::ExecError;
 use isla_lib::executor::Frame;
 use isla_lib::ir;
-use isla_lib::ir::{Name, Ty, Val, UVal};
+use isla_lib::ir::{Name, Ty, Val};
+use isla_lib::ir::source_loc::SourceLoc;
 use isla_lib::log;
 use isla_lib::memory;
 use isla_lib::smt;
@@ -86,7 +87,7 @@ pub enum GVAccessor<N> {
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
     match val {
         Val::Symbolic(var) => match model.get_var(*var)? {
-            Some(Exp::Bits64(bits, len)) => Ok(Some(GroundVal::Bits(B::new(bits, len)))),
+            Some(Exp::Bits64(bits)) => Ok(Some(GroundVal::Bits(B::new(bits.bits, bits.len)))),
             Some(Exp::Bits(bits)) => {
                 if bits.len() > 129 {
                     // TODO: a less hacky way of coping with this...
@@ -107,7 +108,7 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
         // See comment about I128 above, and note that if we wanted full I128 support we'd need to
         // add a case for symbolic values, above
         Val::I128(i) => Ok(Some(GroundVal::Bits(B::zeros(128).add_i128(*i)))),
-        _ => Err(ExecError::Type(format!("Bad value {:?} in get_model_val", val))),
+        _ => Err(ExecError::Type(format!("Bad value {:?} in get_model_val", val), SourceLoc::unknown())),
     }
 }
 
@@ -329,7 +330,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     for (reg, acc) in target.essential_regs() {
         assert!(acc.is_empty()); // TODO
         if let Some(name) = shared_state.symtab.get(&zencode::encode(&reg)) {
-            if let Some(UVal::Init(val)) = initial_frame_registers.get(&name) {
+            if let Some(val) = initial_frame_registers.get_last_if_initialized(name) {
                 if let Some(ground_val) = get_model_val(&mut model, val)? {
                     initial_registers.insert((name, vec![]), ground_val);
                 } else {
@@ -352,7 +353,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     for event in events {
         match &event {
-            Event::ReadMem { value, read_kind, address, bytes, tag_value } if init_complete || is_ifetch(read_kind) => {
+            Event::ReadMem { value, read_kind, address, bytes, tag_value, kind: _ } if init_complete || is_ifetch(read_kind) => {
                 if !init_complete {
                     init_complete = true;
                     // We explicitly reset these registers to symbolic variables after
@@ -383,7 +384,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                 }
                             }
                         } else {
-                            return Err(ExecError::Type(format!("Memory read had wrong number of bits {} != {}", 8 * *bytes, val.len())));
+                            return Err(ExecError::Type(format!("Memory read had wrong number of bits {} != {}", 8 * *bytes, val.len()), SourceLoc::unknown()));
                         }
                     }
                     Some(GroundVal::Bool(_)) => panic!("Memory read returned a boolean?!"),
@@ -406,7 +407,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     None => (),
                 }
             }
-            Event::WriteMem { value: _, write_kind: _, address, data, bytes, tag_value } => {
+            Event::WriteMem { value: _, write_kind: _, address, data, bytes, tag_value, kind: _ } => {
                 let address = match get_model_val(&mut model, address)? {
                     Some(GroundVal::Bits(bs)) => bs,
                     Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use isla_lib::concrete::BV;
+use isla_lib::bitvector::BV;
 use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{SharedState};
 use isla_lib::smt::{smtlib, Solver, Sym};
+use isla_lib::smt::smtlib::bits64;
 use isla_lib::zencode;
 
 use crate::extract_state::GVAccessor;
@@ -17,6 +18,8 @@ pub trait Target
 where
     Self: Sync,
 {
+    /// Model initialisation function
+    fn init_function(&self) -> String;
     /// Test start address
     fn init_pc(&self) -> u64;
     /// Registers supported by the test harness
@@ -29,7 +32,7 @@ where
     fn init<'ir, B: BV>(
         &self,
         shared_state: &SharedState<'ir, B>,
-        frame: &mut LocalFrame<B>,
+        frame: &mut LocalFrame<'ir, B>,
         solver: &mut Solver<B>,
         init_pc: u64,
         regs: HashMap<String, Sym>,
@@ -54,6 +57,10 @@ where
 pub struct Aarch64 {}
 
 impl Target for Aarch64 {
+    fn init_function(&self) -> String {
+        String::from("init")
+    }
+
     fn init_pc(&self) -> u64 {
         0x400000
     }
@@ -133,34 +140,34 @@ pub struct Morello {
     pub translation_in_symbolic_execution: bool,
 }
 
-pub fn translation_table_exp(tt_info: &TranslationTableInfo, read_exp: smtlib::Exp, addr_exp: smtlib::Exp, bytes: u32) -> smtlib::Exp {
+pub fn translation_table_exp(tt_info: &TranslationTableInfo, read_exp: smtlib::Exp<Sym>, addr_exp: smtlib::Exp<Sym>, bytes: u32) -> smtlib::Exp<Sym> {
     let (addresses, tt_base, entry) = tt_info;
     let tt_base = *tt_base;
     let entry = *entry;
-    use smtlib::Exp::{And, Ite, Eq, Bits64, Bvule, Bvult};
+    use smtlib::Exp::{And, Ite, Eq, Bvule, Bvult};
 
     let bits = 8 * bytes;
     let mask: u64 = 0xffffffffffffffff >> 64 - bits;
-    let address_prop = And(Box::new(Bvule(Box::new(Bits64(addresses.start, 64)), Box::new(addr_exp.clone()))),
-                           Box::new(Bvult(Box::new(addr_exp.clone()), Box::new(Bits64(addresses.end, 64)))));
+    let address_prop = And(Box::new(Bvule(Box::new(bits64(addresses.start, 64)), Box::new(addr_exp.clone()))),
+                           Box::new(Bvult(Box::new(addr_exp.clone()), Box::new(bits64(addresses.end, 64)))));
     let value_exp =
-        Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base, 64)))),
-            Box::new(Bits64(entry & mask, bits)),
-            Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 1, 64)))),
-                         Box::new(Bits64((entry >> 8) & mask, bits)),
-                         Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 2, 64)))),
-                                      Box::new(Bits64((entry >> 16) & mask, bits)),
-                                      Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 3, 64)))),
-                                                   Box::new(Bits64((entry >> 24) & mask, bits)),
-                                                   Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 4, 64)))),
-                                                                Box::new(Bits64((entry >> 32) & mask, bits)),
-                                                                Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 5, 64)))),
-                                                                             Box::new(Bits64((entry >> 40) & mask, bits)),
-                                                                             Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 6, 64)))),
-                                                                                          Box::new(Bits64((entry >> 48) & mask, bits)),
-                                                                                          Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(Bits64(tt_base + 7, 64)))),
-                                                                                                       Box::new(Bits64((entry >> 56) & mask, bits)),
-                                                                                                       Box::new(Bits64(0, bits)))))))))))))))));
+        Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base, 64)))),
+            Box::new(bits64(entry & mask, bits)),
+            Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 1, 64)))),
+                         Box::new(bits64((entry >> 8) & mask, bits)),
+                         Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 2, 64)))),
+                                      Box::new(bits64((entry >> 16) & mask, bits)),
+                                      Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 3, 64)))),
+                                                   Box::new(bits64((entry >> 24) & mask, bits)),
+                                                   Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 4, 64)))),
+                                                                Box::new(bits64((entry >> 32) & mask, bits)),
+                                                                Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 5, 64)))),
+                                                                             Box::new(bits64((entry >> 40) & mask, bits)),
+                                                                             Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 6, 64)))),
+                                                                                          Box::new(bits64((entry >> 48) & mask, bits)),
+                                                                                          Box::new(Ite(Box::new(Eq(Box::new(addr_exp.clone()), Box::new(bits64(tt_base + 7, 64)))),
+                                                                                                       Box::new(bits64((entry >> 56) & mask, bits)),
+                                                                                                       Box::new(bits64(0, bits)))))))))))))))));
     And(Box::new(address_prop),
         Box::new(Eq(Box::new(read_exp), Box::new(value_exp))))
 }
@@ -175,6 +182,10 @@ impl Morello {
 }
 
 impl Target for Morello {
+    fn init_function(&self) -> String {
+        String::from("__InitSystem")
+    }
+
     fn init_pc(&self) -> u64 {
         0x40400000
     }
@@ -248,7 +259,7 @@ impl Target for Morello {
     fn init<'ir, B: BV>(
         &self,
         shared_state: &SharedState<'ir, B>,
-        local_frame: &mut LocalFrame<B>,
+        local_frame: &mut LocalFrame<'ir, B>,
         solver: &mut Solver<B>,
         init_pc: u64,
         regs: HashMap<String, Sym>,
@@ -268,8 +279,7 @@ impl Target for Morello {
                  ("TCR_EL3", B::new(0x0d001519, 32))].iter()
             {
                 let id = shared_state.symtab.lookup(&zencode::encode(reg));
-                let val = local_frame.regs_mut().get_mut(&id).unwrap();
-                *val = UVal::Init(Val::Bits(*value));
+                local_frame.regs_mut().assign(id, Val::Bits(*value), shared_state);
             }
         }
 
@@ -277,12 +287,14 @@ impl Target for Morello {
 	    let pstate_id = shared_state.symtab.lookup("zPSTATE");
 	    let el_id = shared_state.symtab.lookup("zEL");
 	    let uao_id = shared_state.symtab.lookup("zUAO");
-            let pstate = local_frame.regs_mut().get_mut(&pstate_id).unwrap();
+            let pstate = local_frame.regs().get_last_if_initialized(pstate_id);
 	    match pstate {
-		UVal::Init(Val::Struct(fields)) => {
+		Some(Val::Struct(fields)) => {
+                    let mut fields = fields.clone();
 		    *fields.get_mut(&el_id).unwrap() = Val::Bits(B::new(0, 2));
 		    // UAO isn't interesting enough to bother with for now
 		    *fields.get_mut(&uao_id).unwrap() = Val::Bits(B::new(0, 1));
+                    local_frame.regs_mut().assign(pstate_id, Val::Struct(fields), shared_state);
 		}
 		_ => panic!("Unexpected value for PSTATE: {:?}", pstate),
 	    }
@@ -292,18 +304,18 @@ impl Target for Morello {
                  ].iter()
             {
                 let id = shared_state.symtab.lookup(&zencode::encode(reg));
-                let val = local_frame.regs_mut().get_mut(&id).unwrap();
-                *val = UVal::Init(Val::Bits(*value));
+                local_frame.regs_mut().assign(id, Val::Bits(*value), shared_state);
             }
 	}
 	
         if self.aarch64_compatible() {
             let pcc_id = shared_state.symtab.lookup("zPCC");
-            let pcc = local_frame.regs_mut().get_mut(&pcc_id).unwrap();
-            match pcc {
-                UVal::Init(Val::Bits(bv)) => *pcc = UVal::Init(Val::Bits(bv.set_slice(0, B::new(init_pc, 64)))),
+            let pcc = local_frame.regs().get_last_if_initialized(pcc_id);
+            let pcc = match pcc {
+                Some(Val::Bits(bv)) => Val::Bits(bv.set_slice(0, B::new(init_pc, 64))),
                 _ => panic!("Unexpected value for PCC: {:?}", pcc),
-            }
+            };
+            local_frame.regs_mut().assign(pcc_id, pcc, shared_state);
         }
         for (reg, v) in regs {
             use isla_lib::smt::smtlib::*;
@@ -321,8 +333,8 @@ impl Target for Morello {
                 let fixed = if self.aarch64_compatible() { 0x00000000 } else { 0x00000200 };
 
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(fixed, 32)),
+                    Box::new(Exp::Bvand(Box::new(bits64(mask, 32)), Box::new(Exp::Var(v)))),
+                    Box::new(bits64(fixed, 32)),
                 )));
             }
             if reg == "SCTLR_EL3" {
@@ -339,13 +351,13 @@ impl Target for Morello {
                     };
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Bvand(
-                        Box::new(Exp::Bits64(
+                        Box::new(bits64(
                             reserved_mask | fixed_mask,
                             64,
                         )),
                         Box::new(Exp::Var(v)),
                     )),
-                    Box::new(Exp::Bits64(
+                    Box::new(bits64(
                         reserved_vals | fixed_vals,
                         64,
                     )),
@@ -359,10 +371,10 @@ impl Target for Morello {
                 // Memory and the translation stub checks that all accesses are aligned.
 		if self.translation_in_symbolic_execution {
 		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
-						   Box::new(Exp::Bits64(0x30d5d985, 64)))));
+						   Box::new(bits64(0x30d5d985, 64)))));
 		} else {
 		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
-						   Box::new(Exp::Bits64(0x30d5d99e, 64)))));
+						   Box::new(bits64(0x30d5d99e, 64)))));
 		}
 	    }
             if reg == "CCTLR_EL3" {
@@ -370,20 +382,20 @@ impl Target for Morello {
                     | 0b1 // fix page table tag generation bit (want to avoid unnecessary fork)
                     | 0b10000; // Leave C64E = 0 for the harness
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Bvand(Box::new(Exp::Bits64(mask, 32)), Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(0, 32)),
+                    Box::new(Exp::Bvand(Box::new(bits64(mask, 32)), Box::new(Exp::Var(v)))),
+                    Box::new(bits64(0, 32)),
                 )));
             }
             if reg == "PCC" {
                 assert!(!self.aarch64_compatible());
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(init_pc, 64)))));
+                    Box::new(bits64(init_pc, 64)))));
                 // The harness needs the PCC to have the executive permission for now
                 if !self.run_in_el0() {
                     solver.add(Def::Assert(Exp::Eq(
                         Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
-                        Box::new(Exp::Bits64(1, 1)))));
+                        Box::new(bits64(1, 1)))));
                 }
             }
             if reg == "CPACR_EL1" {
@@ -391,24 +403,24 @@ impl Target for Morello {
                 // from CELR_EL1)
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(19, 18, Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(0b11, 2)))));
+                    Box::new(bits64(0b11, 2)))));
             }
             if reg == "VBAR_EL1" {
                 // Keep it sufficiently aligned rather than making the harness do it
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(10, 0, Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(0, 11)))));
+                    Box::new(bits64(0, 11)))));
                 // Make the capability bounds use the value to avoid an annoying case split by not using internal exponent
                 // TODO: make this configurable
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(94, 94, Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(1, 1)))));
+                    Box::new(bits64(1, 1)))));
             }
             if reg == "CCTLR_EL1" {
                 // RES0 fields; really just to ensure that the register appears in the SMT model
                 solver.add(Def::Assert(Exp::Eq(
                     Box::new(Exp::Extract(31, 8, Box::new(Exp::Var(v)))),
-                    Box::new(Exp::Bits64(0, 24)))));
+                    Box::new(bits64(0, 24)))));
             }
         }
     }

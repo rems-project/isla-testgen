@@ -39,13 +39,12 @@ use std::ops::Range;
 use std::process::exit;
 
 // TODO: allow B64 or B129
-use isla_lib::concrete::{bitvector129::B129, BV};
+use isla_lib::bitvector::{b129::B129, BV};
 use isla_lib::executor::{Frame, StopConditions};
 use isla_lib::ir::*;
 use isla_lib::memory::{Address, Memory};
 use isla_lib::simplify::write_events;
 use isla_lib::smt::{Checkpoint, Event};
-use isla_lib::zencode;
 
 use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
@@ -183,42 +182,12 @@ fn isla_main() -> i32 {
     }
 }
 
-fn parse_function_name<B>(f: &str, shared_state: &SharedState<B>) -> Name {
-    let fz = zencode::encode(f);
-    shared_state
-        .symtab
-        .get(&fz)
-        .or_else(|| shared_state.symtab.get(&f))
-        .unwrap_or_else(|| panic!("Function {} not found", f))
-}
-
-fn parse_stop_conditions<B>(args: Vec<String>, shared_state: &SharedState<B>) -> StopConditions {
-    let mut conds = StopConditions::new();
-    for arg in args {
-        let mut names = arg.split(',');
-        if let Some(f) = names.next() {
-            if let Some(ctx) = names.next() {
-                if let None = names.next() {
-                    conds.add(parse_function_name(f, shared_state), Some(parse_function_name(ctx, shared_state)));
-                } else {
-                    panic!("Bad stop condition: {}", arg);
-                }
-            } else {
-                conds.add(parse_function_name(f, shared_state), None);
-            }
-        } else {
-            panic!("Bad stop condition: {}", arg);
-        }
-    }
-    conds
-}
-
 fn testgen_main<T: Target, B: BV>(
     target: T,
     mut hasher: Sha256,
     opts: getopts::Options,
     matches: getopts::Matches,
-    arch: Vec<Def<String, B>>,
+    arch: opts::Architecture<B>,
 ) -> i32 {
     let CommonOpts { num_threads, mut arch, symtab, isa_config } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
@@ -251,8 +220,8 @@ fn testgen_main<T: Target, B: BV>(
     // override the PC when setting up the registers.
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
 
-    let stop_conditions = parse_stop_conditions(matches.opt_strs("stop-at"), &shared_state);
-    let exception_stop_conditions = parse_stop_conditions(T::exception_stop_functions(), &shared_state);
+    let stop_conditions = StopConditions::parse(matches.opt_strs("stop-at"), &shared_state);
+    let exception_stop_conditions = StopConditions::parse(T::exception_stop_functions(), &shared_state);
     let exceptions_allowed_at: HashSet<usize> = matches.opt_strs("exceptions-at").iter().map(|s| s.parse().unwrap_or_else(|e| panic!("Bad instruction index {}: {}", s, e))).collect();
 
     let little_endian = match matches.opt_str("endianness").as_deref() {
@@ -279,7 +248,7 @@ fn testgen_main<T: Target, B: BV>(
 
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
-    let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory);
+    let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory, &target.init_function());
     let (frame, checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
 
     let base_name = &matches.opt_str("output").unwrap_or(String::from("test"));

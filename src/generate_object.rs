@@ -31,7 +31,7 @@
 use crate::extract_state::{GVAccessor, GroundVal, PrePostStates};
 use crate::target::Target;
 
-use isla_lib::concrete::BV;
+use isla_lib::bitvector::BV;
 use isla_lib::config::ISAConfig;
 use isla_lib::zencode;
 

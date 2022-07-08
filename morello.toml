@@ -13,6 +13,12 @@ assembler = "aarch64-linux-gnu-as"
 objdump = "aarch64-linux-gnu-objdump"
 linker = "aarch64-linux-gnu-ld"
 
+[mmu]
+page_table_base = "0x300000"
+page_size = "4096"
+s2_page_table_base = "0x200000"
+s2_page_size = "4096"
+
 # This section contains the base address for loading the code for each
 # thread in a litmus test, and the stride which is the distance
 # between each thread in bytes. The overall range for thread memory is
@@ -27,6 +33,7 @@ stride = "0x10000"
 # address.
 [symbolic_addrs]
 base = "0x600000"
+top = "0x700000"
 stride = "0x10"
 
 [registers]
@@ -64,8 +71,6 @@ ignore = [
 "__tlb_enabled" = false
 # Enabled in ASL, but not for us.
 "__trickbox_enabled" = false
-# TODO: enabled in asl, but I think Alasdair might have mentioned this being a problem
-"__mte_implemented" = false
 "CFG_ID_AA64PFR0_EL1_EL0" = "0x2"
 "CFG_ID_AA64PFR0_EL1_EL1" = "0x2"
 "CFG_ID_AA64PFR0_EL1_EL2" = "0x2"
@@ -195,28 +200,4 @@ Cache_op_I_IALLU = "IC"
 # A mapping from Sail barrier_kinds for the spec to the names in cat
 # memory models.
 [barriers]
-Barrier_DMB_SY = "DMB.SY"
-Barrier_DMB_ST = "DMB.ST"
-Barrier_DMB_LD = "DMB.LD"
-Barrier_DMB_ISH = "DMB.ISH"
-Barrier_DMB_ISHST = "DMB.ISHST"
-Barrier_DMB_ISHLD = "DMB.ISHLD"
-Barrier_DMB_NSH = "DMB.NSH"
-Barrier_DMB_NSHST = "DMB.NSHST"
-Barrier_DMB_NSHLD = "DMB.NSHLD"
-Barrier_DMB_OSH = "DMB.OSH"
-Barrier_DMB_OSHST = "DMB.OSHST"
-Barrier_DMB_OSHLD = "DMB.OSHLD"
-Barrier_DSB_SY = "DSB.SY"
-Barrier_DSB_ST = "DSB.ST"
-Barrier_DSB_LD = "DSB.LD"
-Barrier_DSB_ISH = "DSB.ISH"
-Barrier_DSB_ISHST = "DSB.ISHST"
-Barrier_DSB_ISHLD = "DSB.ISHLD"
-Barrier_DSB_NSH = "DSB.NSH"
-Barrier_DSB_NSHST = "DSB.NSHST"
-Barrier_DSB_NSHLD = "DSB.NSHLD"
-Barrier_DSB_OSH = "DSB.OSH"
-Barrier_DSB_OSHST = "DSB.OSHST"
-Barrier_DSB_OSHLD = "DSB.OSHLD"
-Barrier_ISB = "ISB"
+# (not required by test generator)
