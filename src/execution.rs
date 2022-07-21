@@ -477,6 +477,8 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     local_frame.memory_mut().set_client_info(memory_info);
     local_frame.memory().log();
 
+    executor::reset_registers(0, &mut local_frame, &executor::TaskState::new(), shared_state, &mut solver, SourceLoc::unknown()).unwrap_or_else(|e| panic!("Unable to apply reset-time registers: {}", e));
+
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
 }
 

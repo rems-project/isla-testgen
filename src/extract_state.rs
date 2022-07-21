@@ -227,6 +227,23 @@ fn apply_accessors<'a, B: BV>(
     (ty, value)
 }
 
+fn apply_accessors_ty<'a, B: BV>(
+    shared_state: &'a ir::SharedState<B>,
+    start_ty: &'a Ty<Name>,
+    accessors: &Vec<Accessor>,
+) -> &'a Ty<Name> {
+    let mut ty = start_ty;
+    for Accessor::Field(field) in accessors {
+        match ty {
+            Ty::Struct(name) => {
+                ty = shared_state.structs.get(&name).unwrap().get(&field).unwrap();
+            }
+            _ => panic!("Bad type for struct {:?}", ty),
+        }
+    }
+    ty
+}
+
 fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor<Name>> {
     accessors
         .iter()
@@ -470,42 +487,41 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     }
                 }
             }
-            Event::ReadReg(reg, accessors, value) => {
+            // Look at assumptions too because they come from setting initial register values with -R
+            Event::ReadReg(reg, accessors, value) | Event::AssumeReg(reg, accessors, value) => {
+                let is_assume = matches!(event, Event::AssumeReg(_,_,_));
                 let mut process_read_bits =
                     |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
                         if skipped.contains(&key) {
                             return;
                         };
-                        if init_complete {
+                        if init_complete || is_assume {
                             match ty {
                                 Ty::Bits(_) | Ty::Bool | Ty::I128 => {
                                     let model_value = get_model_val(&mut model, value).expect("get_model_val");
-                                    match value {
-                                        Val::Symbolic(_) => {
-                                            if current_registers.insert(key.clone(), (true, model_value)).is_none() {
-                                                match model_value {
-                                                    Some(val) => {
-                                                        initial_registers.insert(key, val);
-                                                    }
-                                                    None => println!(
-                                                        "Ambivalent read of register {}",
-                                                        regacc_to_str(shared_state, &key)
-                                                    ),
+                                    if matches!(value, Val::Symbolic(_)) || is_assume {
+                                        if current_registers.insert(key.clone(), (true, model_value)).is_none() {
+                                            match model_value {
+                                                Some(val) => {
+                                                    initial_registers.insert(key, val);
                                                 }
+                                                None => println!(
+                                                    "Ambivalent read of register {}",
+                                                    regacc_to_str(shared_state, &key)
+                                                ),
                                             }
                                         }
+                                    } else {
                                         // Otherwise when we read a concrete initial value, so it comes from
                                         // initialisation and does not need to be set by the harness
-                                        _ => {
-                                            let post_init =
-                                                if let Some((pi, _)) = current_registers.get(&key) {
-                                                    *pi
-                                                } else {
-                                                    false
-                                                };
-                                            current_registers.insert(key.clone(), (post_init, model_value));
-                                        }
+                                        let post_init =
+                                            if let Some((pi, _)) = current_registers.get(&key) {
+                                                *pi
+                                            } else {
+                                                false
+                                            };
+                                        current_registers.insert(key.clone(), (post_init, model_value));
                                     }
                                 }
                                 _ => {
@@ -522,7 +538,11 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     };
                 match register_types.get(reg) {
                     Some(ty) => {
-                        let (read_ty, read_value) = apply_accessors(shared_state, ty, accessors, &value);
+                        let (read_ty, read_value) = if is_assume {
+                            (apply_accessors_ty(shared_state, ty, accessors), value)
+                        } else {
+                            apply_accessors(shared_state, ty, accessors, &value)
+                        };
                         iter_struct_types(
                             shared_state,
                             &mut process_read_bits,
