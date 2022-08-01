@@ -35,7 +35,7 @@ use isla_lib::bitvector::BV;
 use isla_lib::config::ISAConfig;
 use isla_lib::zencode;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt;
@@ -338,17 +338,17 @@ fn write_cap_esr_check(
 
 pub fn write_main_memory<B: BV>(
     asm_file: &mut File,
-    ld_file: &mut File,
+    sections: &mut BTreeMap<u64, (String, Option<u64>)>,
     pre_post_states: &PrePostStates<B>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut name = 0;
     for (region, contents) in pre_post_states.pre_memory.iter() {
-        writeln!(ld_file, ".data{0} {1:#010x} : {{ *(data{0}) }}", name, region.start)?;
-        writeln!(asm_file, ".section data{}, #alloc, #write", name)?;
+        sections.insert(region.start, (format!(".data{0}", name), None));
+        writeln!(asm_file, ".section .data{}, #alloc, #write", name)?;
         write_bytes(asm_file, contents)?;
         name += 1;
     }
-    writeln!(ld_file, ".data {:#010x} : {{ *(data) }}", 0x00100000u64)?; /* TODO: parametrise */
+    sections.insert(0x00100000u64, (String::from(".data"), None)); /* TODO: parametrise */
     name = 0;
     for (_region, contents) in pre_post_states.post_memory.iter() {
         writeln!(asm_file, ".data")?;
@@ -547,7 +547,7 @@ pub fn make_asm_files<B: BV, T: Target>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let flags = get_flags(&pre_post_states);
     let mut asm_file = File::create(&format!("{}.s", base_name))?;
-    let mut ld_file = File::create(&format!("{}.ld", base_name))?;
+    let mut sections: BTreeMap<u64, (String, Option<u64>)> = BTreeMap::new();
 
     let mut system_cap_map: HashMap<String, SystemRegister> = HashMap::new();
     system_cap_map.insert("ELR_EL1".to_string(), REG_CELR_EL1);
@@ -563,8 +563,6 @@ pub fn make_asm_files<B: BV, T: Target>(
     system_cap_map.insert("SP_EL1".to_string(), REG_CSP_EL1);
     system_cap_map.insert("SP_EL2".to_string(), REG_CSP_EL2);
 
-    writeln!(ld_file, "SECTIONS {{")?;
-
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.pre_registers);
     let post_gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 32, &pre_post_states.post_registers);
     let system_registers = get_system_registers(target, &target.regs(), &pre_post_states.pre_registers);
@@ -574,8 +572,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     for (region, contents) in pre_post_states.code.iter() {
         // The AT(...) version of the address allows the region to be executed in a second mapping that's non-writable, and
         // hence executable at EL1, while being loaded at the lower physcial address.
-        writeln!(ld_file, ".text{0} {1:#010x} : AT({2:#010x}) {{ *(text{0}) }}", name, region.start, region.start & 0x3fff_ffff)?;
-        writeln!(asm_file, ".section text{}, #alloc, #execinstr", name)?;
+        sections.insert(region.start, (format!(".text{0}", name), Some(region.start & 0x3fff_ffff)));
+        writeln!(asm_file, ".section .text{}, #alloc, #execinstr", name)?;
         if name == 0 {
             writeln!(asm_file, "test_start:")?;
         }
@@ -599,7 +597,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         name += 1;
     }
 
-    writeln!(ld_file, ".text  0x10300000 : {{ *(.text) }}")?;
+    sections.insert(0x10300000, (String::from(".text"), None));
 
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
@@ -891,7 +889,7 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tisb")?;
     }
     writeln!(asm_file, "\tldr x0, =ok_message")?;
-    writeln!(asm_file, "\tb write_tube")?;
+    writeln!(asm_file, "\tb write_result")?;
     writeln!(asm_file, "\t.global comparison_fail")?;
     writeln!(asm_file, "comparison_fail:")?;
     // Repeat DDC because this is also the exception entry path
@@ -905,20 +903,27 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tisb")?;
     }
     writeln!(asm_file, "\tldr x0, =fail_message")?;
-    writeln!(asm_file, "write_tube:")?;
+    writeln!(asm_file, "write_result:")?;
+    writeln!(asm_file, "\t/* Writes and exit code for trickbox and uart simulators */")?;
     writeln!(asm_file, "\tldr x1, =trickbox")?;
-    writeln!(asm_file, "write_tube_loop:")?;
-    writeln!(asm_file, "\tldrb w2, [x0], #1")?;
-    writeln!(asm_file, "\tstrb w2, [x1]")?;
-    writeln!(asm_file, "\tb write_tube_loop")?;
+    writeln!(asm_file, "\tldr x2, =uart")?;
+    writeln!(asm_file, "write_result_loop:")?;
+    writeln!(asm_file, "\tldrb w3, [x0], #1")?;
+    writeln!(asm_file, "\tcbz w3, haltsim")?;
+    writeln!(asm_file, "\tstrb w3, [x1]")?;
+    writeln!(asm_file, "\tstrb w3, [x2]")?;
+    writeln!(asm_file, "\tb write_result_loop")?;
+
+    writeln!(asm_file, "haltsim:")?;
+    writeln!(asm_file, "\t.inst 0xfee1dead")?;
 
     writeln!(asm_file, "ok_message:")?;
-    writeln!(asm_file, "\t.ascii \"OK\\n\\004\"")?;
+    writeln!(asm_file, "\t.ascii \"OK\\n\\004\\000\"")?;
     writeln!(asm_file, "fail_message:")?;
-    writeln!(asm_file, "\t.ascii \"FAILED\\n\\004\"")?;
+    writeln!(asm_file, "\t.ascii \"FAILED\\n\\004\\000\"")?;
 
     writeln!(asm_file, "")?;
-    write_main_memory(&mut asm_file, &mut ld_file, &pre_post_states)?;
+    write_main_memory(&mut asm_file, &mut sections, &pre_post_states)?;
 
     if target.has_capabilities() {
     writeln!(asm_file, "")?;
@@ -926,8 +931,9 @@ pub fn make_asm_files<B: BV, T: Target>(
     }
 
     writeln!(asm_file, "")?;
-    writeln!(ld_file, ".vector_table 0x0000000010310000 : {{ *(vector_table) }}")?;
-    writeln!(asm_file, ".section vector_table, #alloc, #execinstr")?;
+    sections.insert(0x0000000010310000, (String::from(".vector_table"), None));
+    writeln!(asm_file, ".section .vector_table, #alloc, #execinstr")?;
+    writeln!(asm_file, "vector_table:")?;
     writeln!(asm_file, "\tb comparison_fail")?;
     writeln!(asm_file, "\t.balign 128")?;
     writeln!(asm_file, "\tb comparison_fail")?;
@@ -969,8 +975,9 @@ pub fn make_asm_files<B: BV, T: Target>(
 
 	writeln!(asm_file, "")?;
         // Execute at the non-writable 0x5... virtual address, but load at the 0x1... physical address
-	writeln!(ld_file, ".vector_table_el1 0x0000000050320000 : AT(0x0000000010320000) {{ *(vector_table_el1) }}")?;
-	writeln!(asm_file, ".section vector_table_el1, #alloc, #execinstr")?;
+	sections.insert(0x0000000050320000, (String::from(".vector_table_el1"), Some(0x0000000010320000)));
+	writeln!(asm_file, ".section .vector_table_el1, #alloc, #execinstr")?;
+        writeln!(asm_file, "vector_table_el1:")?;
         let mut off = 0;
         while off < 0x800 {
 	    if off != 0 { writeln!(asm_file, "\t.balign 128")?; }
@@ -981,8 +988,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     
     writeln!(asm_file, "")?;
     writeln!(asm_file, "\t/* Translation table, two entries for the bottom GB, capabilities allowed */")?;
-    writeln!(ld_file, ".text_tt 0x0000000010400000 : {{ *(text_tt) }}")?;
-    writeln!(asm_file, ".section text_tt, #alloc, #execinstr")?;
+    sections.insert(0x0000000010400000, (String::from(".text_tt"), None));
+    writeln!(asm_file, ".section .text_tt, #alloc, #execinstr")?;
     writeln!(asm_file, "\t.align 12")?;
     writeln!(asm_file, "\t.global tt_l1_base")?;
     writeln!(asm_file, "tt_l1_base:")?;
@@ -990,9 +997,21 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.dword 0x30000000000007c1 // No write permission so that EL1 can execute")?;
     writeln!(asm_file, "\t.fill 4088, 1, 0")?;
 
+    let mut ld_file = File::create(&format!("{}.ld", base_name))?;
+    writeln!(ld_file, "SECTIONS {{")?;
+
+    for (vma, (name, lma_opt)) in &sections {
+        if let Some(lma) = lma_opt {
+            writeln!(ld_file, "{0} {1:#018x} : AT({2:#018x}) {{ *({0}) }}", name, vma, lma)?;
+        } else {
+            writeln!(ld_file, "{0} {1:#018x} : {{ *({0}) }}", name, vma)?;
+        }
+    }
+
     writeln!(ld_file, "}}")?;
     writeln!(ld_file, "ENTRY(preamble)")?;
     writeln!(ld_file, "trickbox = 0x13000000;")?;
+    writeln!(ld_file, "uart = 0x3c000000;")?;
 
     Ok(())
 }
