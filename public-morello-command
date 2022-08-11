@@ -1,0 +1,32 @@
+# EnterLowPowerState is killed to prevent (e.g.) wfe, which is encoded as a hint
+# due to sail exception handling problems I'm going further just now and excluding all hints
+# pac and tagged memory instructions not supported on morello
+# exclusive instructions not supported without memory setup
+# ldct and stct not supported without memory setup
+# eret needs more registers set
+# The AddressSizeFault needs to be excluded if we're lying about address translation
+# Don't even want to think about UndefinedFault
+
+#  --exclude memory/ordered-rcpc --exclude lda_stl --exclude memory/exclusive --exclude memory/atomicops \
+#  --exclude '^CAS' --exclude '^LDAP?RB?' --exclude '^LDA?X[PR]' --exclude '^STLRB?' --exclude '^STL?X[PR]' --exclude '^SWP' \
+#  --exclude '^LDCT' --exclude '^STCT' \
+
+export RUST_BACKTRACE=1
+
+/usr/bin/time -v \
+target/release/isla-testgen -a morello -T 1 -C public-morello.toml -A ../sail-morello/test-generation/morello-testgen.ir \
+  -t ../morello.tag \
+  --max-retries 20 -k Halt -k EnterLowPowerState -k ConstrainUnpredictable \
+  -k AArch64_TakeException,__FetchNextInstr \
+  -k AArch64_AddressSizeFault,AArch64_TranslateAddressS1Off \
+  -k AArch64_UndefinedFault \
+  --exclude /pac/  --exclude /vector/ --exclude /float/ --exclude /pointer/mc --exclude /tags/mc \
+  --exclude integer/crc \
+  --exclude '^bl?ra:' \
+  --exclude '^e?reta:' --exclude '^eret:' --exclude '^wf[ei]:' --exclude '^m(sr|rs)' --exclude '^sys' \
+  --exclude 'system/hints' \
+   -L AddWithCarry -L CapGetExponent -L CapGetBottom -L CapGetTop -L CapIsExponentOutOfRange \
+   -L CapIsRangeInBounds -L fdiv_int -L Bit -L Bits -L CapGetBounds -L CapSetBounds -L CapIsRepresentableFast \
+   _ _
+#   _ \
+#     _ _ _ _ _ _ _ _ _ -n 25 -o $OUT/test-$SET- 2>&1 | tee $OUT/log-$SET
