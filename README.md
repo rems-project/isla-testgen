@@ -14,7 +14,7 @@ implementations.  This was described in
 
 alongside our formal proof and other validation work.
 
-See the [LICENSE file][LICENSE] for copyright information and funding
+See the [LICENSE file](LICENSE) for copyright information and funding
 acknowledgements.  In addition, Arm provided valuable cooperation
 during the development of this software and the testing of the Morello
 specifications.
