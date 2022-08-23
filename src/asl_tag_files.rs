@@ -1,6 +1,6 @@
 // BSD 2-Clause License
 //
-// Copyright (c) 2020 Brian Campbell
+// Copyright (c) 2020, 2021 Brian Campbell
 //
 // All rights reserved.
 //
