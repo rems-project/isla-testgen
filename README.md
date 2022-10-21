@@ -78,7 +78,7 @@ the instruction encodings:
    the instruction encodings can be extracted from.  Then use the
    tools to produce the "tag" file:
    ```
-   mra_tools/bin/instr2asl.py --altslicesyntax --demangle --verbose -o morello ISA_A64_xml_morelloA-2022-01
+   mra_tools/bin/instrs2asl.py --altslicesyntax --demangle --verbose -o morello ISA_A64_xml_morelloA-2022-01
    ```
 
 7. The file `public-morello-command` contains an example command line
