@@ -44,14 +44,14 @@ use isla_lib::error::ExecError;
 use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions, TaskState};
 use isla_lib::ir::*;
-use isla_lib::ir::source_loc::SourceLoc;
+use isla_lib::source_loc::SourceLoc;
 use isla_lib::memory::{Memory, SmtKind};
 use isla_lib::register::RegisterBindings;
 use isla_lib::simplify::write_events;
 use isla_lib::smt;
 use isla_lib::smt::smtlib;
 use isla_lib::smt::smtlib::bits64;
-use isla_lib::smt::{Checkpoint, Event, Model, SmtResult, Solver, Sym};
+use isla_lib::smt::{Checkpoint, Event, Model, ReadOpts, SmtResult, Solver, Sym, WriteOpts};
 use isla_lib::zencode;
 use isla_lib::{log, log_from};
 
@@ -85,8 +85,6 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, bytes: u64) -> smtlib:
 #[derive(Debug, Clone)]
 struct SeqMemory {
     translation_table: Option<TranslationTableInfo>,
-    read_ifetch: EnumMember,
-    read_exclusives: Vec<EnumMember>,
     memory_var: Sym,
     tag_memory_var: Sym,
 }
@@ -97,10 +95,11 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         regions: &[isla_lib::memory::Region<B>],
         solver: &mut Solver<B>,
         value: &Val<B>,
-        read_kind: &Val<B>,
+        _read_kind: &Val<B>,
         address: &Val<B>,
         bytes: u32,
         tag: &Option<Val<B>>,
+        opts: &ReadOpts,
     ) {
         use isla_lib::smt::smtlib::{Def, Exp};
 
@@ -123,20 +122,16 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             }
             None => None,
         };
-        let kind = match read_kind {
-            Val::Enum(e) => {
-                if *e == self.read_ifetch {
-                    SmtKind::ReadInstr
-                } else if self.read_exclusives.iter().any(|en| *e == *en) {
-                    // We produce a dummy read so that failed store exclusives still get address
-                    // constraints, but the memory must be writable.
-                    SmtKind::WriteData
-                } else {
-                    SmtKind::ReadData
-                }
-            }
-            _ => SmtKind::ReadData,
-        };
+        let kind =
+            if opts.is_ifetch {
+                SmtKind::ReadInstr
+            } else if opts.is_exclusive {
+                // We produce a dummy read so that failed store exclusives still get address
+                // constraints, but the memory must be writable.
+                SmtKind::WriteData
+            } else {
+                SmtKind::ReadData
+            };
         let address_constraint = isla_lib::memory::smt_address_constraint(regions, &addr_exp, bytes, kind, solver, tag_exp.as_ref());
 
         let full_constraint = match &self.translation_table {
@@ -164,6 +159,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         data: &Val<B>,
         bytes: u32,
         tag: &Option<Val<B>>,
+        _opts: &WriteOpts,
     ) {
         use isla_lib::smt::smtlib::{Def, Exp};
 
@@ -263,7 +259,7 @@ fn resolve_concrete_pc<'ir, B: BV>(
 		Some(Exp::Bits64(result)) => {
 		    if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))))
 			.is_unsat().map_err(|e| format!("{}", e))? {
-			    let bits = B::new(result.bits, result.len);
+			    let bits = B::new(result.lower_u64(), result.len());
 			    // Cache the concrete value
                             registers.assign(pc_id, Val::Bits(bits), shared_state);
 			    Ok(ConcretePC(bits))
@@ -347,7 +343,7 @@ fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, 
     log!(log::VERBOSE, format!("Model: {:?}", model));
     let opcode = model.get_var(opcode_var).unwrap().unwrap();
     match opcode {
-        smt::smtlib::Exp::Bits64(bits) => Ok(bits.bits as u32),
+        smt::smtlib::Exp::Bits64(bits) => Ok(bits.lower_u64() as u32),
         _ => Err(String::from("Bad model value")),
     }
 }
@@ -406,17 +402,6 @@ fn setup_val<'a, B: BV>(
     }
 }
 
-fn get_enum<'ir, B: BV>(
-    shared_state: &SharedState<'ir, B>,
-    solver: &mut Solver<B>,
-    sym: &str,
-) -> EnumMember {
-    let zsym = zencode::encode(sym);
-    let name = shared_state.symtab.get(&zsym).unwrap_or_else(|| panic!("Enum member {} missing", sym));
-    let (pos, size) = shared_state.enum_members.get(&name).unwrap();
-    EnumMember { enum_id: solver.get_enum(*size), member: *pos }
-}
-
 pub fn setup_init_regs<'ir, B: BV, T: Target>(
     shared_state: &SharedState<'ir, B>,
     frame: Frame<'ir, B>,
@@ -456,9 +441,6 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     local_frame.regs_mut().assign(pc_id, pc, shared_state);
 
     let memory = solver.fresh();
-    let read_ifetch = get_enum(shared_state, &mut solver, "Read_ifetch");
-    let read_exclusives: Vec<EnumMember> =
-        ["Read_exclusive", "Read_exclusive_acquire"].iter().map(|s| get_enum(shared_state, &mut solver, s)).collect();
     let tag_memory_var = solver.fresh();
 
     solver.add(smtlib::Def::DeclareConst(
@@ -473,7 +455,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     target.init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
 
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { translation_table: target.translation_table_info(), read_ifetch, read_exclusives, memory_var: memory, tag_memory_var });
+        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var });
     local_frame.memory_mut().set_client_info(memory_info);
     local_frame.memory().log();
 
@@ -492,11 +474,11 @@ pub fn init_model<'ir, B: BV>(
     println!("Initialising model...");
 
     let init_fn = shared_state.symtab.lookup(&zencode::encode(init_fn_name));
-    let (init_args, _, init_instrs) = shared_state.functions.get(&init_fn)
+    let (init_args, init_retty, init_instrs) = shared_state.functions.get(&init_fn)
         .unwrap_or_else(|| panic!("Initialisation function \"{}\" not found", init_fn_name));
     let init_result = SegQueue::new();
     let task_state = TaskState::new();
-    let init_task = LocalFrame::new(init_fn, init_args, None, init_instrs)
+    let init_task = LocalFrame::new(init_fn, init_args, init_retty, None, init_instrs)
         .add_lets(&lets)
         .add_regs(&regs)
         .set_memory(memory.clone())
@@ -541,11 +523,12 @@ pub fn setup_opcode<'ir, B: BV>(
     let pc_id = shared_state.symtab.lookup("z_PC");
     let pc = local_frame.regs().get_last_if_initialized(pc_id).unwrap();
     // This will add a fake read event, but that shouldn't matter
-    let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
+    /*let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
-    let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };
+    let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };*/
+    let read_opts = ReadOpts::ifetch();
     let read_val =
-        local_frame.memory().read(Val::Enum(read_kind), pc.clone(), Val::I128(4), &mut solver, false).unwrap();
+        local_frame.memory().read(Val::Unit /*Val::Enum(read_kind)*/, pc.clone(), Val::I128(4), &mut solver, false, read_opts).unwrap();
 
     let opcode_var = solver.fresh();
     solver.add(Def::DeclareConst(opcode_var, Ty::BitVec(32)));
@@ -593,7 +576,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
     assertion_reports: &Option<String>,
 ) -> Vec<(Frame<'ir, B>, Checkpoint<B>)> {
     let function_id = shared_state.symtab.lookup(&zencode::encode(model_function));
-    let (args, _, instrs) = shared_state.functions.get(&function_id).unwrap();
+    let (args,ret_ty, instrs) = shared_state.functions.get(&function_id).unwrap();
 
     let local_frame = executor::unfreeze_frame(frame);
 
@@ -601,7 +584,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
 
     let task_state = TaskState::new();
     let mut task =
-        local_frame.new_call(function_id, args, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, &task_state, checkpoint);
+        local_frame.new_call(function_id, args, ret_ty, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, &task_state, checkpoint);
     task.set_stop_conditions(stop_set);
 
     let queue = Arc::new(SegQueue::new());
@@ -639,10 +622,10 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     log_from!(tid, log::VERBOSE, "dead");
                     collected.push((Err(String::from("dead")), events))
                 }
-                Err((ExecError::AssertionFailed(assertion), backtrace)) if assertion_events => {
+                Err((assertion @ ExecError::AssertionFailure(_, _), backtrace)) if assertion_events => {
                     let events = events_of(&solver, true);
-                    log_from!(tid, log::VERBOSE, format!("Error assertion failure (recorded) {}", assertion));
-                    let mut s = format!("Assertion failed {}\n", assertion);
+                    log_from!(tid, log::VERBOSE, format!("Error {}", assertion));
+                    let mut s = format!("{}\n", assertion);
                     for (f, pc) in backtrace.iter().rev() {
                         s.push_str(&format!("  {} @ {}\n", shared_state.symtab.to_str(*f), pc));
                     }
@@ -727,18 +710,11 @@ pub fn finalize<'ir, B: BV, T: Target>(
 
     // The events in the processor initialisation aren't relevant, so we take
     // them from the first instruction fetch.
-    let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
-    let (read_kind_pos, _read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
-
-    let is_ifetch = |val: &Val<B>| match val {
-        Val::Enum(EnumMember { member, .. }) => *member == *read_kind_pos,
-        _ => false,
-    };
 
     let mut post_init = false;
     for event in events.drain(..).rev() {
         match event {
-            Event::ReadMem { read_kind, .. } if is_ifetch(read_kind) => post_init = true,
+            Event::ReadMem { .. } if event.is_ifetch() => post_init = true,
             Event::ReadReg(reg, _, _) | Event::WriteReg(reg, _, _) => {
                 if post_init {
                     let name = shared_state.symtab.to_str(*reg);

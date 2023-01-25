@@ -189,7 +189,8 @@ fn testgen_main<T: Target, B: BV>(
     matches: getopts::Matches,
     arch: opts::Architecture<B>,
 ) -> i32 {
-    let CommonOpts { num_threads, mut arch, symtab, isa_config } =
+    // TODO: use source_path
+    let CommonOpts { num_threads, mut arch, symtab, isa_config, source_path: _ } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
     let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");

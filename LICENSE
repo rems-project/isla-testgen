@@ -2,6 +2,7 @@ BSD 2-Clause License
 
 Copyright (c) 2020, 2021, 2022 Brian Campbell
 Copyright (c) 2020 Alasdair Armstrong
+Copyright (c) 2023 Capabilities Limited
 
 All rights reserved.
 
@@ -39,3 +40,7 @@ Programme Grant EP/K008528/1 "REMS: Rigorous Engineering for
 Mainstream Systems", and the European Research Council (ERC) under the
 European Union’s Horizon 2020 research and innovation programme (grant
 agreement No 789108, "ELVER").
+
+Portions of this software were developed by Brian Campbell under
+contract to Capabilities Limited, under Defense Advanced Research
+Projects Agency (DARPA) Contract No. HR001122C0110 ("ETC").

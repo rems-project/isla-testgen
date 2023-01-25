@@ -40,7 +40,7 @@ use isla_lib::error::ExecError;
 use isla_lib::executor::Frame;
 use isla_lib::ir;
 use isla_lib::ir::{Name, Ty, Val};
-use isla_lib::ir::source_loc::SourceLoc;
+use isla_lib::source_loc::SourceLoc;
 use isla_lib::log;
 use isla_lib::memory;
 use isla_lib::smt;
@@ -87,7 +87,7 @@ pub enum GVAccessor<N> {
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
     match val {
         Val::Symbolic(var) => match model.get_var(*var)? {
-            Some(Exp::Bits64(bits)) => Ok(Some(GroundVal::Bits(B::new(bits.bits, bits.len)))),
+            Some(Exp::Bits64(bits)) => Ok(Some(GroundVal::Bits(B::new(bits.lower_u64(), bits.len())))),
             Some(Exp::Bits(bits)) => {
                 if bits.len() > 129 {
                     // TODO: a less hacky way of coping with this...
@@ -315,12 +315,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         SmtResult::Unknown => return Err(ExecError::Z3Unknown),
     };
 
-    // The events in the processor initialisation aren't relevant, so we take
-    // them from the first instruction fetch.
-    let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
-    let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
-    let read_kind_id = solver.get_enum(*read_kind_size);
-
     let mut model = Model::new(&solver);
     log!(log::VERBOSE, format!("Model: {:?}", model));
 
@@ -363,14 +357,11 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     let mut init_complete = false;
 
-    let is_ifetch = |val: &Val<B>| match val {
-        Val::Enum(ir::EnumMember { enum_id, member }) => *enum_id == read_kind_id && *member == *read_kind_pos,
-        _ => false,
-    };
-
     for event in events {
         match &event {
-            Event::ReadMem { value, read_kind, address, bytes, tag_value, kind: _ } if init_complete || is_ifetch(read_kind) => {
+            // The events in the processor initialisation aren't relevant, so we take
+            // them from the first instruction fetch.
+            Event::ReadMem { value, read_kind: _, address, bytes, tag_value, opts: _, region: _ } if init_complete || event.is_ifetch() => {
                 if !init_complete {
                     init_complete = true;
                     // We explicitly reset these registers to symbolic variables after
@@ -424,7 +415,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     None => (),
                 }
             }
-            Event::WriteMem { value: _, write_kind: _, address, data, bytes, tag_value, kind: _ } => {
+            Event::WriteMem { value: _, write_kind: _, address, data, bytes, tag_value, opts:_, region: _ } => {
                 let address = match get_model_val(&mut model, address)? {
                     Some(GroundVal::Bits(bs)) => bs,
                     Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),
@@ -464,26 +455,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     }
                     None => {
                         current_tag_memory.insert(address & 0xffff_ffff_ffff_fff0u64, Some(false));
-                    }
-                }
-            }
-            Event::WriteMemTag { value: _, write_kind: _, address, tag } => {
-                let address = match get_model_val(&mut model, address)? {
-                    Some(GroundVal::Bits(bs)) => bs,
-                    Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),
-                    None => panic!("Arbitrary memory write address"),
-                };
-                let address: u64 = address.try_into()?;
-                let tag_val = get_model_val(&mut model, tag)?;
-                match tag_val {
-                    Some(GroundVal::Bits(val)) => {
-                        let tag = !val.is_zero();
-                        current_tag_memory.insert(address, Some(tag));
-                    }
-                    Some(GroundVal::Bool(_)) => panic!("Tag memory write has wrong type (bool)"),
-                    None => {
-                        println!("Ambivalent tag write to {:x}", address);
-                        current_tag_memory.insert(address, None);
                     }
                 }
             }
