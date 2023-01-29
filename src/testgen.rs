@@ -50,6 +50,7 @@ use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
 use isla_testgen::extract_state;
 use isla_testgen::generate_object;
+use isla_testgen::generate_testfile;
 use isla_testgen::target;
 use isla_testgen::target::Target;
 
@@ -153,6 +154,7 @@ fn isla_main() -> i32 {
     opts.optflag("", "translation-in-symbolic-execution", "Turn on the MMU with a simple translation table during symbolic execution");
     opts.optmulti("x", "exceptions-at", "Allow processor exceptions at given instruction", "<instruction number>");
     opts.optopt("", "all-paths-for", "Generate tests using all feasible paths for the given instruction", "<instruction number>");
+    opts.optflag("", "test-file", "Generate a text test file rather than an object file");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -273,6 +275,7 @@ fn testgen_main<T: Target, B: BV>(
         symbolic_regions: &symbolic_regions,
         symbolic_code_regions: &symbolic_code_regions,
         assertion_reports: matches.opt_str("assertion-reports"),
+        generate_testfile: matches.opt_present("test-file"),
     };
 
     let all_paths_for = matches.opt_get("all-paths-for").expect("Bad all-paths-for argument");
@@ -347,6 +350,7 @@ struct TestConf<'ir, B> {
     symbolic_regions: &'ir [Range<Address>],
     symbolic_code_regions: &'ir [Range<Address>],
     assertion_reports: Option<String>,
+    generate_testfile: bool,
 }
 
 #[derive(Debug)]
@@ -446,8 +450,12 @@ fn generate_test<'ir, B: BV, T: Target>(
         conf.symbolic_regions,
         conf.symbolic_code_regions,
     )?;
-    generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
-    generate_object::build_elf_file(conf.isa_config, basename)?;
+    if conf.generate_testfile {
+        generate_testfile::make_testfile(target, basename, &instr_map, initial_state, opcode_index)?;
+    } else {
+        generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
+        generate_object::build_elf_file(conf.isa_config, basename)?;
+    }
 
     Ok(())
 }
@@ -647,13 +655,19 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 Ok(initial_state) => {
                     had_success = true;
                     let basename_number = format!("{}-{:03}", basename, group_i + 1);
-                    generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)
-                        .map_err(|e| e.to_string())
-                        .and_then(
-                            |_| generate_object::build_elf_file(conf.isa_config, &basename_number)
-                                .map_err(|e| e.to_string()))
-                        .unwrap_or_else(
-                            |error| println!("Failed to construct test: {}", error));
+                    if conf.generate_testfile {
+                        generate_testfile::make_testfile(target, &basename_number, &instr_map, initial_state, opcode_index)
+                            .unwrap_or_else(
+                                |error| println!("Failed to write test file: {}", error.to_string()));
+                    } else {
+                        generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)
+                            .map_err(|e| e.to_string())
+                            .and_then(
+                                |_| generate_object::build_elf_file(conf.isa_config, &basename_number)
+                                    .map_err(|e| e.to_string()))
+                            .unwrap_or_else(
+                                |error| println!("Failed to construct test: {}", error));
+                    }
                 }
                 Err(error) => println!("Failed to extract state: {}", error),
             }

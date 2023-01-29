@@ -9,3 +9,5 @@
 callgrind.*
 z3_problems
 .merlin
+/test_runner/_build
+/test_runner/lib/_build

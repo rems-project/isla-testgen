@@ -1,0 +1,6 @@
+(executables
+ (public_names test_runner read_regs)
+ (names runner read_regs)
+ (libraries test_runner)
+)
+

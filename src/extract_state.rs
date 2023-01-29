@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter;
+use std::fmt;
 use std::ops::Range;
 
 use crate::target::Target;
@@ -78,10 +79,21 @@ impl<B: BV> std::fmt::Display for GroundVal<B> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, Hash)]
 pub enum GVAccessor<N> {
     Field(N),
     Element(usize),
+}
+
+impl<S, T : PartialEq<S>> PartialEq<GVAccessor<S>> for GVAccessor<T> {
+    fn eq(&self, other: &GVAccessor<S>) -> bool {
+        use GVAccessor::*;
+        match (self, other) {
+            (Field(x), Field(y)) => x == y,
+            (Element(i), Element(j)) => i == j,
+            _ => false
+        }
+    }
 }
 
 fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
@@ -131,6 +143,15 @@ fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<G
     });
     let parts: Vec<String> = iter::once(reg_str).chain(fields).collect();
     parts.join(".")
+}
+
+impl fmt::Display for GVAccessor<&str> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GVAccessor::Field(s) => write!(f, "{}", s),
+            GVAccessor::Element(i) => write!(f, "{}", i),
+        }
+    }
 }
 
 fn regacc_name<'ir, B>(

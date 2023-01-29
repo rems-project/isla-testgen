@@ -1,0 +1,6 @@
+(lang dune 3.6)
+
+(package
+ (name test_runner)
+ (synopsis "Run tests from isla-testgen")
+ (depends ocaml dune zarith unix))
