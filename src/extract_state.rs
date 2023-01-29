@@ -325,6 +325,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
+    sparse: bool,
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
@@ -634,37 +635,47 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     }
     println!();
 
-    let mut initial_symbolic_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
-        symbolic_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
+    let (initial_symbolic_memory, initial_symbolic_tag_memory, initial_symbolic_code_memory) =
+        if !sparse {
+            let mut initial_symbolic_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
+                symbolic_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
+            
+            let mut initial_symbolic_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)> =
+                symbolic_regions.iter().map(|r| (r.clone(), vec![false; (r.end - r.start) as usize])).collect();
+            
+            let mut initial_symbolic_code_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
+                symbolic_code_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
 
-    let mut initial_symbolic_tag_memory: Vec<(Range<memory::Address>, Vec<bool>)> =
-        symbolic_regions.iter().map(|r| (r.clone(), vec![false; (r.end - r.start) as usize])).collect();
+            for (address, value) in &initial_memory {
+                for (r, v) in &mut initial_symbolic_memory {
+                    if r.contains(address) {
+                        v[(address - r.start) as usize] = *value;
+                        break;
+                    }
+                }
+                for (r, v) in &mut initial_symbolic_code_memory {
+                    if r.contains(address) {
+                        v[(address - r.start) as usize] = *value;
+                        break;
+                    }
+                }
+            }
+            for (address, tag) in &initial_tag_memory {
+                for (r, v) in &mut initial_symbolic_tag_memory {
+                    if r.contains(address) {
+                        v[(address - r.start) as usize] = *tag;
+                        break;
+                    }
+                }
+            }
 
-    let mut initial_symbolic_code_memory: Vec<(Range<memory::Address>, Vec<u8>)> =
-        symbolic_code_regions.iter().map(|r| (r.clone(), vec![0; (r.end - r.start) as usize])).collect();
-
-    for (address, value) in &initial_memory {
-        for (r, v) in &mut initial_symbolic_memory {
-            if r.contains(address) {
-                v[(address - r.start) as usize] = *value;
-                break;
-            }
-        }
-        for (r, v) in &mut initial_symbolic_code_memory {
-            if r.contains(address) {
-                v[(address - r.start) as usize] = *value;
-                break;
-            }
-        }
-    }
-    for (address, tag) in &initial_tag_memory {
-        for (r, v) in &mut initial_symbolic_tag_memory {
-            if r.contains(address) {
-                v[(address - r.start) as usize] = *tag;
-                break;
-            }
-        }
-    }
+            (initial_symbolic_memory, initial_symbolic_tag_memory, initial_symbolic_code_memory)
+        } else {
+            let (data, code) = initial_memory.iter().partition(|(k,_)| symbolic_regions.iter().any(|r| r.contains(k)));
+            (batch_memory(&data, &(|x: &u8| Some(*x)), 1),
+             batch_memory(&initial_tag_memory, &(|x: &bool| Some(*x)), 1),
+             batch_memory(&code, &(|x: &u8| Some(*x)), 1))
+        };
 
     let pre_registers =
         initial_registers.iter().map(|((reg, acc), gv)| (regacc_name(shared_state, *reg, acc), *gv)).collect();

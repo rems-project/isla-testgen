@@ -158,6 +158,7 @@ fn isla_main() -> i32 {
     opts.optflag("", "test-file", "Generate a text test file rather than an object file");
     opts.optmulti("", "memory-region", "Add a memory region (overriding the default)", "<start[-end]>");
     opts.optopt("", "code-region", "Specify the region of memory to be used for code", "<start[-end]>");
+    opts.optflag("", "sparse", "Omit untouched initial memory in test");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -311,6 +312,8 @@ fn testgen_main<T: Target, B: BV>(
         symbolic_code_regions: &symbolic_code_regions,
         assertion_reports: matches.opt_str("assertion-reports"),
         generate_testfile: matches.opt_present("test-file"),
+        sparse: matches.opt_present("sparse"),
+        init_pc,
     };
 
     let all_paths_for = matches.opt_get("all-paths-for").expect("Bad all-paths-for argument");
@@ -386,6 +389,8 @@ struct TestConf<'ir, B> {
     symbolic_code_regions: &'ir [Range<Address>],
     assertion_reports: Option<String>,
     generate_testfile: bool,
+    sparse: bool,
+    init_pc: u64,
 }
 
 #[derive(Debug)]
@@ -484,9 +489,10 @@ fn generate_test<'ir, B: BV, T: Target>(
         conf.register_types,
         conf.symbolic_regions,
         conf.symbolic_code_regions,
+        conf.sparse,
     )?;
     if conf.generate_testfile {
-        generate_testfile::make_testfile(target, basename, &instr_map, initial_state, opcode_index)?;
+        generate_testfile::make_testfile(target, basename, &instr_map, initial_state, conf.init_pc, opcode_index)?;
     } else {
         generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
         generate_object::build_elf_file(conf.isa_config, basename)?;
@@ -686,12 +692,13 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 conf.register_types,
                 conf.symbolic_regions,
                 conf.symbolic_code_regions,
+                conf.sparse,
             ) {
                 Ok(initial_state) => {
                     had_success = true;
                     let basename_number = format!("{}-{:03}", basename, group_i + 1);
                     if conf.generate_testfile {
-                        generate_testfile::make_testfile(target, &basename_number, &instr_map, initial_state, opcode_index)
+                        generate_testfile::make_testfile(target, &basename_number, &instr_map, initial_state, conf.init_pc, opcode_index)
                             .unwrap_or_else(
                                 |error| println!("Failed to write test file: {}", error.to_string()));
                     } else {

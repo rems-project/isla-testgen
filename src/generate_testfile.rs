@@ -14,6 +14,7 @@ pub fn make_testfile<B: BV, T: Target>(
     base_name: &str,
     instr_map: &HashMap<B, String>,
     pre_post_states: PrePostStates<B>,
+    init_pc: u64,
     steps: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut test_file = File::create(&format!("{}.test", base_name))?;
@@ -63,7 +64,7 @@ pub fn make_testfile<B: BV, T: Target>(
             None => panic!("Post-state PC missing"),
         };
 
-    writeln!(test_file, "RUN start {:#010x} stop {:#010x} steps {}", target.init_pc(), post_pc.lower_u64(), steps)?;
+    writeln!(test_file, "RUN start {:#010x} stop {:#010x} steps {}", init_pc, post_pc.lower_u64(), steps)?;
 
     for (region, contents) in pre_post_states.post_memory.iter() {
         for (i, byte) in contents.iter().enumerate() {
