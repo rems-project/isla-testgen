@@ -35,6 +35,7 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::num::ParseIntError;
 use std::ops::Range;
 use std::process::exit;
 
@@ -155,6 +156,8 @@ fn isla_main() -> i32 {
     opts.optmulti("x", "exceptions-at", "Allow processor exceptions at given instruction", "<instruction number>");
     opts.optopt("", "all-paths-for", "Generate tests using all feasible paths for the given instruction", "<instruction number>");
     opts.optflag("", "test-file", "Generate a text test file rather than an object file");
+    opts.optmulti("", "memory-region", "Add a memory region (overriding the default)", "<start[-end]>");
+    opts.optopt("", "code-region", "Specify the region of memory to be used for code", "<start[-end]>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -180,6 +183,25 @@ fn isla_main() -> i32 {
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1
+        }
+    }
+}
+
+fn u64_parse(s: &str) -> Result<u64,ParseIntError> {
+    if s.len() > 2 && &s[0..2] == "0x" {
+        u64::from_str_radix(&s[2..], 16)
+    } else {
+        u64::from_str_radix(s, 10)
+    }
+}
+
+fn range_parse(s: &str) -> Range<u64> {
+    match s.find('-') {
+        Some(i) => u64_parse(&s[..i-1]).expect("Bad region start")..
+            u64_parse(&s[i+1..]).expect("Bad region end"),
+        None => {
+            let start = u64_parse(s).expect("Bad region start");
+            start..start+0x1000
         }
     }
 }
@@ -218,7 +240,23 @@ fn testgen_main<T: Target, B: BV>(
     let Initialized { regs, mut lets, shared_state } =
         initialize_architecture(&mut arch, symtab, &isa_config, AssertionMode::Optimistic);
 
-    let init_pc: u64 = target.init_pc();
+    let regions = matches.opt_strs("memory-region");
+    let symbolic_regions: Vec<Range<u64>> =
+        if regions.is_empty() {
+            vec![0x1000..0x2000]
+        } else {
+            regions.iter().map(|s| range_parse(&s)).collect()
+        };
+    let symbolic_code_regions =
+        match matches.opt_str("code-region") {
+            Some(s) => vec![range_parse(&s)],
+            None => {
+                let init_pc: u64 = target.init_pc();
+                vec![init_pc..init_pc + 0x10000]
+            }
+        };
+    let init_pc = symbolic_code_regions[0].start;
+
     // NB: The current aarch64 model needs this, however we explicitly
     // override the PC when setting up the registers.
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
@@ -238,9 +276,6 @@ fn testgen_main<T: Target, B: BV>(
 
     let dump_events = matches.opt_present("events");
     let dump_all_events = matches.opt_present("all-events");
-
-    let symbolic_regions = [0x1000..0x2000];
-    let symbolic_code_regions = [init_pc..init_pc + 0x10000];
     let mut memory = Memory::new();
     for r in &symbolic_regions {
         memory.add_symbolic_region(r.clone());
