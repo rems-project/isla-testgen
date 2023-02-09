@@ -66,6 +66,7 @@ where
         regs: HashMap<String, Sym>,
     );
     fn translation_table_info(&self) -> Option<TranslationTableInfo>;
+    fn pc_reg() -> &'static str;
     fn number_gprs() -> u32;
     fn is_gpr(name: &str) -> Option<u32>;
     fn gpr_prefix() -> &'static str;
@@ -121,6 +122,7 @@ impl Target for Aarch64 {
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
         None
     }
+    fn pc_reg() -> &'static str { "z_PC" }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("zR") {
@@ -464,6 +466,7 @@ impl Target for Morello {
     ) -> Result<(), String> {
         Ok(())
     }
+    fn pc_reg() -> &'static str { "z_PC" }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("z_R") {
@@ -503,7 +506,7 @@ impl Target for Morello {
 
 pub struct X86 {}
 
-const x86_gprs : [&str; 16] = 
+const X86_GPRS : [&str; 16] = 
     ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp", 
      "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
 
@@ -519,7 +522,7 @@ impl Target for X86 {
     }
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
-        x86_gprs
+        X86_GPRS
             .iter()
             .map(|r| (r.to_string(), vec![]))
             .collect()
@@ -538,10 +541,11 @@ impl Target for X86 {
         _regs: HashMap<String, Sym>,
     ) { }
     fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
-    fn number_gprs() -> u32 { x86_gprs.len() as u32 }
+    fn pc_reg() -> &'static str { "zrip" }
+    fn number_gprs() -> u32 { X86_GPRS.len() as u32 }
     fn is_gpr(name: &str) -> Option<u32> {
         let name = zencode::decode(name);
-        x86_gprs.iter().position(|&x| name == x).map(|i| i as u32)
+        X86_GPRS.iter().position(|&x| name == x).map(|i| i as u32)
     }
     fn gpr_prefix() -> &'static str { panic!("not implemented"); }
     fn gpr_pad() -> bool { panic!("not implemented"); }
@@ -558,5 +562,5 @@ impl Target for X86 {
     fn run_in_el0(&self) -> bool { panic!("not implemented"); }
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
-    fn final_instruction(&self, exit_register: u32) -> u32 { panic!("not implemented"); }
+    fn final_instruction(&self, _exit_register: u32) -> u32 { panic!("not implemented"); }
 }

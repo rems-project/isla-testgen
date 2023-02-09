@@ -432,7 +432,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
         reg_vars.insert(reg, var);
     }
 
-    let pc_id = shared_state.symtab.lookup("z_PC");
+    let pc_id = shared_state.symtab.lookup(T::pc_reg());
     let pc_type = register_types.get(&pc_id).unwrap();
     let pc = match pc_type {
         Ty::Bits(n) => Val::Bits(B::new(init_pc, *n)),

@@ -105,7 +105,7 @@ fn instruction_opcode<B: BV>(
     let (opcode, random, description) = if instruction == "_" {
         let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64, register_bias);
         println!("Instruction {:#010x}: {}", opcode, description);
-        (opcode.to_le_bytes(), true, description)
+        (B::from_u32(opcode), true, description)
     } else if instruction.starts_with("0x") {
         println!("Instruction {}", instruction);
         let (opcode_str, description) =
@@ -113,20 +113,19 @@ fn instruction_opcode<B: BV>(
                 None => (instruction, instruction),
                 Some(i) => (&instruction[..i], &instruction[i+1..]),
             };
-        match u32::from_str_radix(&opcode_str[2..], 16) {
-            Ok(opcode) => (opcode.to_le_bytes(), false, description.to_string()),
-            Err(e) => {
-                eprintln!("Could not parse instruction: {}", e);
+        match B::from_str(opcode_str) {
+            Some(opcode) => (opcode, false, description.to_string()),
+            None => {
+                eprintln!("Could not parse instruction: {}", opcode_str);
                 exit(1)
             }
         }
     } else {
         println!("Instruction {}", instruction);
         match assemble_instruction(&instruction, &isa_config) {
-            Ok(bytes) => {
-                let mut opcode: [u8; 4] = Default::default();
-                opcode.copy_from_slice(&bytes);
-                (opcode, false, instruction.to_string())
+            Ok(mut bytes) => {
+                bytes.reverse();
+                (B::from_bytes(&bytes), false, instruction.to_string())
             }
             Err(msg) => {
                 eprintln!("Could not assemble instruction: {}", msg);
@@ -134,13 +133,15 @@ fn instruction_opcode<B: BV>(
             }
         }
     };
-    (B::from_u32(if little_endian { u32::from_le_bytes(opcode) } else { u32::from_be_bytes(opcode) }), random, description)
+    // TODO: reintroduce big endian or eliminate everywhere
+    assert!(little_endian);
+    (opcode, random, description)
 }
 
 fn isla_main() -> i32 {
     let mut opts = opts::common_opts();
     opts.optopt("", "max-retries", "Stop if this many instructions in a row are useless", "<retries>");
-    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64/morello-el3");
+    opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64/morello-el3/x86");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("o", "output", "base name for output files", "<file>");
@@ -181,6 +182,7 @@ fn isla_main() -> i32 {
         "morello" => testgen_main(target::Morello { style: EL0, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         "morello-el3" => testgen_main(target::Morello { style: EL3Only, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         "morello-aarch64" => testgen_main(target::Morello { style: AArch64Compatible, translation_in_symbolic_execution }, hasher, opts, matches, arch),
+        "x86" => testgen_main(target::X86 { }, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1
