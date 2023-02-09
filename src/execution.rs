@@ -702,7 +702,7 @@ pub fn finalize<'ir, B: BV, T: Target>(
     // Find a couple of unused scratch registers for the harness
     let trace = checkpoint.trace().as_ref().expect("No trace!");
     let mut events = trace.to_vec();
-    let mut regs: HashSet<u32> = (0..31).collect();
+    let mut regs: HashSet<u32> = (0..T::number_gprs()).collect();
 
     // TODO: move scratch register selection later, by splitting state
     // extraction into a symbolic bit then fill in values from the

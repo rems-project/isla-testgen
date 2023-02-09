@@ -66,6 +66,7 @@ where
         regs: HashMap<String, Sym>,
     );
     fn translation_table_info(&self) -> Option<TranslationTableInfo>;
+    fn number_gprs() -> u32;
     fn is_gpr(name: &str) -> Option<u32>;
     fn gpr_prefix() -> &'static str;
     fn gpr_pad() -> bool;
@@ -120,6 +121,7 @@ impl Target for Aarch64 {
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
         None
     }
+    fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("zR") {
             let reg_str = &name[2..];
@@ -462,6 +464,7 @@ impl Target for Morello {
     ) -> Result<(), String> {
         Ok(())
     }
+    fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("z_R") {
             let reg_str = &name[3..];
@@ -496,4 +499,64 @@ impl Target for Morello {
 	    EL0 => 0xd4000001, // SVC 0
         }
     }
+}
+
+pub struct X86 {}
+
+const x86_gprs : [&str; 16] = 
+    ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp", 
+     "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+
+impl Target for X86 {
+    /// Model initialisation function
+    fn init_function(&self) -> String {
+        String::from("initialize_model")
+    }
+    /// Test start address
+    fn init_pc(&self) -> u64 {
+        // Appears to be the default I got from ld on Linux
+        0x401000
+    }
+    /// Registers supported by the test harness
+    fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
+        x86_gprs
+            .iter()
+            .map(|r| (r.to_string(), vec![]))
+            .collect()
+    }
+    /// Registers that the harness wants even if they're not in the trace
+    fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
+    /// System registers that the harness should check
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
+    /// Any additional initialisation
+    fn init<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _solver: &mut Solver<B>,
+        _init_pc: u64,
+        _regs: HashMap<String, Sym>,
+    ) { }
+    fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
+    fn number_gprs() -> u32 { x86_gprs.len() as u32 }
+    fn is_gpr(name: &str) -> Option<u32> {
+        let name = zencode::decode(name);
+        x86_gprs.iter().position(|&x| name == x).map(|i| i as u32)
+    }
+    fn gpr_prefix() -> &'static str { panic!("not implemented"); }
+    fn gpr_pad() -> bool { panic!("not implemented"); }
+    // Model currently uses Sail exception for processor exceptions
+    fn exception_stop_functions() -> Vec<String> { vec![] }
+    fn postprocess<'ir, B: BV>(&self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &LocalFrame<B>,
+        _solver: &mut Solver<B>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn has_capabilities(&self) -> bool { false }
+    fn run_in_el0(&self) -> bool { panic!("not implemented"); }
+    // I'd like to move the stuff below to the config
+    fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
+    fn final_instruction(&self, exit_register: u32) -> u32 { panic!("not implemented"); }
 }
