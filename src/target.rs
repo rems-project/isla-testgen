@@ -66,6 +66,7 @@ where
         regs: HashMap<String, Sym>,
     );
     fn translation_table_info(&self) -> Option<TranslationTableInfo>;
+    fn pc_alignment() -> u32;
     fn pc_reg() -> &'static str;
     fn number_gprs() -> u32;
     fn is_gpr(name: &str) -> Option<u32>;
@@ -81,7 +82,7 @@ where
     fn run_in_el0(&self) -> bool;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
-    fn final_instruction(&self, exit_register: u32) -> u32;
+    fn final_instruction<B: BV>(&self, exit_register: u32) -> B;
 }
 
 pub struct Aarch64 {}
@@ -122,6 +123,7 @@ impl Target for Aarch64 {
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
         None
     }
+    fn pc_alignment() -> u32 { 4 }
     fn pc_reg() -> &'static str { "z_PC" }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
@@ -159,8 +161,8 @@ impl Target for Aarch64 {
     fn run_in_el0(&self) -> bool {
 	false
     }
-    fn final_instruction(&self, exit_register: u32) -> u32 {
-        0xd61f0000 | (exit_register << 5) // br exit_register
+    fn final_instruction<B: BV>(&self, exit_register: u32) -> B {
+        B::from_u32(0xd61f0000 | (exit_register << 5)) // br exit_register
     }
 }
 
@@ -466,6 +468,7 @@ impl Target for Morello {
     ) -> Result<(), String> {
         Ok(())
     }
+    fn pc_alignment() -> u32 { 4 }
     fn pc_reg() -> &'static str { "z_PC" }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
@@ -494,13 +497,13 @@ impl Target for Morello {
 	    _ => false,
 	}
     }
-    fn final_instruction(&self, exit_register: u32) -> u32 {
+    fn final_instruction<B: BV>(&self, exit_register: u32) -> B {
         use MorelloStyle::*;
-        match self.style {
+        B::from_u32(match self.style {
             AArch64Compatible => 0xd61f0000 | (exit_register << 5), // br exit_register
             EL3Only => 0b11_0000101100_00100_0_0_100_00000_0_0_0_00 | (exit_register << 5), // br exit_capability
 	    EL0 => 0xd4000001, // SVC 0
-        }
+        })
     }
 }
 
@@ -512,8 +515,10 @@ const X86_GPRS : [&str; 16] =
 
 impl Target for X86 {
     /// Model initialisation function
+    // Bit of a cheat; using this to get to 64bit mode, currently works because the
+    // actual initialisation function is empty.
     fn init_function(&self) -> String {
-        String::from("initialize_model")
+        String::from("initialise_64_bit_mode")
     }
     /// Test start address
     fn init_pc(&self) -> u64 {
@@ -522,10 +527,13 @@ impl Target for X86 {
     }
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
-        X86_GPRS
+        let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
+            X86_GPRS
             .iter()
             .map(|r| (r.to_string(), vec![]))
-            .collect()
+            .collect();
+        regs.push((String::from("rflags"),vec![GVAccessor::Field(String::from("bits"))]));
+        regs
     }
     /// Registers that the harness wants even if they're not in the trace
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
@@ -541,6 +549,7 @@ impl Target for X86 {
         _regs: HashMap<String, Sym>,
     ) { }
     fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
+    fn pc_alignment() -> u32 { 1 }
     fn pc_reg() -> &'static str { "zrip" }
     fn number_gprs() -> u32 { X86_GPRS.len() as u32 }
     fn is_gpr(name: &str) -> Option<u32> {
@@ -562,5 +571,9 @@ impl Target for X86 {
     fn run_in_el0(&self) -> bool { panic!("not implemented"); }
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
-    fn final_instruction(&self, _exit_register: u32) -> u32 { panic!("not implemented"); }
+    // Note that the final instruction is just a dummy because we only
+    // support gdb tests at the moment
+    fn final_instruction<B: BV>(&self, _exit_register: u32) -> B {
+        B::new(0xcc, 8) // INT3 breakpoint
+    }
 }

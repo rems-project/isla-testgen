@@ -1,11 +1,10 @@
-use crate::extract_state::{GroundVal, PrePostStates};
+use crate::extract_state::{GroundVal, GVAccessor, PrePostStates};
 use crate::target::Target;
 
 use isla_lib::bitvector::BV;
 use isla_lib::zencode;
 
 use std::collections::{HashMap};
-use std::convert::TryFrom;
 use std::fs::File;
 use std::io::Write;
 
@@ -20,16 +19,16 @@ pub fn make_testfile<B: BV, T: Target>(
     let mut test_file = File::create(&format!("{}.test", base_name))?;
     for (region, contents) in pre_post_states.code.iter() {
         let mut ptr = region.start;
-        // TODO: chunking will have to change for x86_64
-        for word in contents.chunks(4) {
-            let word_u32 = u32::from_le_bytes(TryFrom::try_from(word)?);
-            write!(test_file, "mem {:#x} 32 {:#010x}", ptr, word_u32)?;
-            if let Some(description) = instr_map.get(&B::new(word_u32 as u64, 32)) {
+        for chunk in contents.chunks(T::pc_alignment() as usize) {
+            let chunk_le: Vec<u8> = chunk.iter().cloned().rev().collect();
+            let chunk_b = B::from_bytes(&chunk_le);
+            write!(test_file, "mem {:#x} {} 0x{:x}", ptr, chunk_b.len(), chunk_b)?;
+            if let Some(description) = instr_map.get(&chunk_b) {
                 writeln!(test_file, " // {}", description)?;
             } else {
                 writeln!(test_file)?;
             }
-            ptr += 4;
+            ptr += T::pc_alignment() as u64;
         }
     }
 
@@ -43,10 +42,14 @@ pub fn make_testfile<B: BV, T: Target>(
 
     let target_regs = target.regs();
 
-    for ((zregister, accessor), val) in pre_post_states.pre_registers.iter() {
+    for ((zregister, zaccessor), val) in pre_post_states.pre_registers.iter() {
         let register = zencode::decode(zregister);
-        if target_regs.iter().any(|(r,a)| *r == register && a == accessor) {
-            let mut names: Vec<String> = vec![register.to_string()];
+        let accessor: Vec<GVAccessor<String>> = zaccessor.iter().map(|a| match a {
+            GVAccessor::Field(s) => GVAccessor::Field(zencode::decode(s)),
+            GVAccessor::Element(i) => GVAccessor::Element(*i),
+        }).collect();
+        if target_regs.iter().any(|(r,a)| { eprintln!("{} {}  {:?} {:?}\n", *r, register, *a, accessor); *r == *register && *a == accessor}) {
+            let mut names: Vec<String> = vec![register];
             let mut accessors: Vec<String> = accessor.iter().map(|acc| acc.to_string()).collect();
             names.append(&mut accessors);
             if let GroundVal::Bits(bits) = val {
@@ -58,7 +61,7 @@ pub fn make_testfile<B: BV, T: Target>(
     }
 
     let post_pc =
-        match pre_post_states.post_registers.get(&("z_PC", vec![])) {
+        match pre_post_states.post_registers.get(&(T::pc_reg(), vec![])) {
             Some(GroundVal::Bits(bits)) => bits,
             Some(v) => panic!("Bad post-state PC: {:?}", v),
             None => panic!("Post-state PC missing"),

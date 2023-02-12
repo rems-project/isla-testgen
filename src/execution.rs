@@ -291,7 +291,7 @@ fn postprocess<'ir, B: BV, T: Target>(
 
     // Ensure the new PC can be placed in memory
     // (currently this is used to prevent an exception)
-    let pc_id = shared_state.symtab.lookup("z_PC");
+    let pc_id = shared_state.symtab.lookup(T::pc_reg());
     match resolve_concrete_pc(local_frame.regs_mut(), pc_id, shared_state, &mut solver)? {
 	SymbolicPC(v) => {
 	    let pc_exp = Exp::Var(v);
@@ -302,8 +302,9 @@ fn postprocess<'ir, B: BV, T: Target>(
 	}
 	ConcretePC(b) => {
 	    if let Ok(pc_i) = b.try_into() {
-		if local_frame.memory().access_check(pc_i, 4, SmtKind::ReadInstr) {
-		    if pc_i % 4 != 0 {
+                let alignment = T::pc_alignment();
+		if local_frame.memory().access_check(pc_i, alignment, SmtKind::ReadInstr) {
+		    if pc_i % alignment as u64 != 0 {
 			return Err(format!("Unaligned concrete PC: {}", pc_i))
 		    }
 		    // The target can optionally recognise an exception handler elsewhere
@@ -505,7 +506,8 @@ pub fn init_model<'ir, B: BV>(
     (frame, post_init_checkpoint)
 }
 
-pub fn setup_opcode<'ir, B: BV>(
+pub fn setup_opcode<'ir, B: BV, T: Target>(
+    _target: &T,
     shared_state: &SharedState<'ir, B>,
     frame: &Frame<'ir, B>,
     opcode: B,
@@ -520,18 +522,19 @@ pub fn setup_opcode<'ir, B: BV>(
 
     let local_frame = executor::unfreeze_frame(frame);
 
-    let pc_id = shared_state.symtab.lookup("z_PC");
+    let pc_id = shared_state.symtab.lookup(T::pc_reg());
     let pc = local_frame.regs().get_last_if_initialized(pc_id).unwrap();
     // This will add a fake read event, but that shouldn't matter
     /*let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
     let read_kind = EnumMember { enum_id: solver.get_enum(*read_kind_size), member: *read_kind_pos };*/
     let read_opts = ReadOpts::ifetch();
+    let read_size = Val::I128((opcode.len() / 8) as i128);
     let read_val =
-        local_frame.memory().read(Val::Unit /*Val::Enum(read_kind)*/, pc.clone(), Val::I128(4), &mut solver, false, read_opts).unwrap();
+        local_frame.memory().read(Val::Unit /*Val::Enum(read_kind)*/, pc.clone(), read_size, &mut solver, false, read_opts).unwrap();
 
     let opcode_var = solver.fresh();
-    solver.add(Def::DeclareConst(opcode_var, Ty::BitVec(32)));
+    solver.add(Def::DeclareConst(opcode_var, Ty::BitVec(opcode.len())));
 
     // Working with a mask currently requires the model to be
     // sufficiently monomorphic, so prefer using a concrete value if
@@ -732,8 +735,8 @@ pub fn finalize<'ir, B: BV, T: Target>(
     let exit_register = reg_iter.next().expect("Not enough scratch registers available");
 
     // Add branch instruction at the end of the sequence
-    let opcode: u32 = target.final_instruction(*exit_register);
-    let (_, new_checkpoint) = setup_opcode(shared_state, frame, B::from_u32(opcode), None, checkpoint);
+    let opcode: B = target.final_instruction(*exit_register);
+    let (_, new_checkpoint) = setup_opcode(target, shared_state, frame, opcode, None, checkpoint);
 
     (*entry_register, *exit_register, new_checkpoint)
 }

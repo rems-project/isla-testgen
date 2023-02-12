@@ -64,6 +64,8 @@ fn main() {
     exit(code)
 }
 
+// TODO: to use masks with x86 we'd need to change the type of the masks
+// (also in execition::setup_opcode)
 fn parse_instruction_masks(little_endian: bool, args: &[String]) -> Vec<(&str, Option<u32>)> {
     let mut iter = args.iter().peekable();
     let mut v: Vec<(&str, Option<u32>)> = vec![];
@@ -434,7 +436,7 @@ fn generate_test<'ir, B: BV, T: Target>(
             };
             println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
-                setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
+                setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
                 target,
                 &run_instruction_function,
@@ -539,7 +541,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
             };
             println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
-                setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
+                setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
                 target,
                 &run_instruction_function,
@@ -589,7 +591,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
             };
             println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
-                setup_opcode(conf.shared_state, &frame, opcode, core_opcode_mask, checkpoint.clone());
+                setup_opcode(target, conf.shared_state, &frame, opcode, core_opcode_mask, checkpoint.clone());
             let continuations = run_model_instruction(
                 target,
                 &run_instruction_function,
@@ -646,7 +648,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 };
                 println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
                 let (opcode_var, op_checkpoint) =
-                    setup_opcode(conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
+                    setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
                 let mut continuations = run_model_instruction(
                     target,
                     &run_instruction_function,

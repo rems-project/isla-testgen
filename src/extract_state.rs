@@ -138,7 +138,7 @@ fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<G
     let (reg, acc) = regacc;
     let reg_str = shared_state.symtab.to_str(*reg).to_string();
     let fields = acc.iter().map(|acc| match acc {
-        GVAccessor::Field(a) => shared_state.symtab.to_str(*a).to_string(),
+        GVAccessor::Field(a) => zencode::decode(shared_state.symtab.to_str(*a)),
         GVAccessor::Element(i) => i.to_string(),
     });
     let parts: Vec<String> = iter::once(reg_str).chain(fields).collect();
@@ -146,6 +146,15 @@ fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<G
 }
 
 impl fmt::Display for GVAccessor<&str> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GVAccessor::Field(s) => write!(f, "{}", s),
+            GVAccessor::Element(i) => write!(f, "{}", i),
+        }
+    }
+}
+
+impl fmt::Display for GVAccessor<String> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GVAccessor::Field(s) => write!(f, "{}", s),
