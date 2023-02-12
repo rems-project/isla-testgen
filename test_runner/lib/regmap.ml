@@ -10,4 +10,5 @@ let lookup map r =
 
 let map =
   map_from_list
-    (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i))
+    (("rflags.bits", "eflags")::
+       (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i)))

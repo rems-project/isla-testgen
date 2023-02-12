@@ -1,7 +1,7 @@
 open Ast
 
 type run_type =
-  | Breakpoint
+  | Breakpoint of Gdb.breakpoint
   | SingleStep of int option
 
 let z_of_bytes bytes =
@@ -33,14 +33,14 @@ let run_test verbose run_type con regs test =
   List.iter set test.prestate;
   let execute () =
     match run_type with
-    | Breakpoint -> begin
+    | Breakpoint bp_type -> begin
         let stop =
           match test.run.stop with
           | Some stop -> stop
           | None -> failwith "No stop location in test (necessary in breakpoint mode)"
         in
         if verbose then Printf.printf "Setting breakpoint at %s\n%!" (Z.format "#x" stop);
-        Gdb.insert_breakpoint con Hardware stop None;
+        Gdb.insert_breakpoint con bp_type stop None;
         if verbose then Printf.printf "Running from %s\n%!" (Option.fold ~none:"current pc" ~some:(Z.format "#x") test.run.start);
         let _ = Gdb.continue con test.run.start in ()
       end

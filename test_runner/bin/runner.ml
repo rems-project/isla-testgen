@@ -3,7 +3,7 @@ open Test_runner
 let usage = "test_runner <test file>"
 
 let test_file = ref (None : string option)
-let run_type = ref Runner.Breakpoint
+let run_type = ref (Runner.Breakpoint Gdb.Hardware)
 let verbose = ref false
 let gdb_verbose = ref false
 
@@ -12,6 +12,7 @@ let options = [
     ("--single-step-for", Arg.Int (fun i -> run_type := Runner.SingleStep (Some i)), "Run in single step mode for n steps");
     ("--verbose", Arg.Set verbose, "Print more information");
     ("--gdb-verbose", Arg.Set gdb_verbose, "Print GDB protocol information");
+    ("--sw-breakpoint", Arg.Unit (fun _ -> run_type := Runner.Breakpoint Gdb.Software), "Use a software breakpoint");
   ]
 let anon_arg s =
   match !test_file with
