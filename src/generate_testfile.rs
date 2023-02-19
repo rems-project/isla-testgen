@@ -48,7 +48,7 @@ pub fn make_testfile<B: BV, T: Target>(
             GVAccessor::Field(s) => GVAccessor::Field(zencode::decode(s)),
             GVAccessor::Element(i) => GVAccessor::Element(*i),
         }).collect();
-        if target_regs.iter().any(|(r,a)| { eprintln!("{} {}  {:?} {:?}\n", *r, register, *a, accessor); *r == *register && *a == accessor}) {
+        if target_regs.iter().any(|(r,a)| *r == *register && *a == accessor) {
             let mut names: Vec<String> = vec![register];
             let mut accessors: Vec<String> = accessor.iter().map(|acc| acc.to_string()).collect();
             names.append(&mut accessors);

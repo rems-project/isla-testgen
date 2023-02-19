@@ -41,7 +41,7 @@ use std::process::exit;
 
 // TODO: allow B64 or B129
 use isla_lib::bitvector::{b129::B129, BV};
-use isla_lib::executor::{Frame, StopConditions};
+use isla_lib::executor::{Frame, StopAction, StopConditions};
 use isla_lib::ir::*;
 use isla_lib::memory::{Address, Memory};
 use isla_lib::simplify::write_events;
@@ -149,7 +149,7 @@ fn isla_main() -> i32 {
     opts.optopt("o", "output", "base name for output files", "<file>");
     opts.optopt("n", "number-gens", "number of tests to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
-    opts.optmulti("k", "stop-at", "stop executions early if they reach this function (with optional context)", "<function name[, function name]>");
+    opts.optmulti("k", "kill-at", "stop executions early if they reach this function (with optional context)", "<function name[, function name]>");
     opts.optflag("", "events", "dump final events");
     opts.optflag("", "all-events", "dump events for every behaviour");
     opts.optflag("", "uniform-registers", "Choose from registers uniformly, rather than with a bias");
@@ -202,7 +202,7 @@ fn u64_parse(s: &str) -> Result<u64,ParseIntError> {
 
 fn range_parse(s: &str) -> Range<u64> {
     match s.find('-') {
-        Some(i) => u64_parse(&s[..i-1]).expect("Bad region start")..
+        Some(i) => u64_parse(&s[..i]).expect("Bad region start")..
             u64_parse(&s[i+1..]).expect("Bad region end"),
         None => {
             let start = u64_parse(s).expect("Bad region start");
@@ -266,8 +266,8 @@ fn testgen_main<T: Target, B: BV>(
     // override the PC when setting up the registers.
     lets.insert(ELF_ENTRY, UVal::Init(Val::I128(init_pc as i128)));
 
-    let stop_conditions = StopConditions::parse(matches.opt_strs("stop-at"), &shared_state);
-    let exception_stop_conditions = StopConditions::parse(T::exception_stop_functions(), &shared_state);
+    let stop_conditions = StopConditions::parse(matches.opt_strs("kill-at"), &shared_state, StopAction::Kill);
+    let exception_stop_conditions = StopConditions::parse(T::exception_stop_functions(), &shared_state, StopAction::Kill);
     let exceptions_allowed_at: HashSet<usize> = matches.opt_strs("exceptions-at").iter().map(|s| s.parse().unwrap_or_else(|e| panic!("Bad instruction index {}: {}", s, e))).collect();
 
     let little_endian = match matches.opt_str("endianness").as_deref() {
@@ -434,7 +434,7 @@ fn generate_test<'ir, B: BV, T: Target>(
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
-            println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+            println!("opcode: {}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
@@ -472,7 +472,8 @@ fn generate_test<'ir, B: BV, T: Target>(
         }
     }
 
-    let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
+    let (entry_reg, exit_reg, c) = finalize(target, conf.shared_state, &frame, checkpoint);
+    checkpoint = c;
 
     println!("Complete");
 
@@ -539,7 +540,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
-            println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+            println!("opcode: {}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations = run_model_instruction(
@@ -589,7 +590,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
-            println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+            println!("opcode: {}  mask: {}", opcode, mask_str);
             let (opcode_var, op_checkpoint) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, core_opcode_mask, checkpoint.clone());
             let continuations = run_model_instruction(
@@ -646,7 +647,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                     None => "none".to_string(),
                     Some(m) => format!("{:#010x}", m),
                 };
-                println!("opcode: {:#010x}  mask: {}", opcode, mask_str);
+                println!("opcode: {}  mask: {}", opcode, mask_str);
                 let (opcode_var, op_checkpoint) =
                     setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
                 let mut continuations = run_model_instruction(
@@ -675,7 +676,8 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 }
             }
 
-            let (entry_reg, exit_reg, checkpoint) = finalize(target, conf.shared_state, &frame, checkpoint);
+            let (entry_reg, exit_reg, c) = finalize(target, conf.shared_state, &frame, checkpoint);
+            checkpoint = c;
 
             println!("Complete");
 

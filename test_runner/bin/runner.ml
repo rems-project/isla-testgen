@@ -6,6 +6,8 @@ let test_file = ref (None : string option)
 let run_type = ref (Runner.Breakpoint Gdb.Hardware)
 let verbose = ref false
 let gdb_verbose = ref false
+let wait_for_breakpoint = ref false
+let kill = ref false
 
 let options = [
     ("--single-step", Arg.Unit (fun _ -> run_type := Runner.SingleStep None), "Run in single step mode");
@@ -13,6 +15,8 @@ let options = [
     ("--verbose", Arg.Set verbose, "Print more information");
     ("--gdb-verbose", Arg.Set gdb_verbose, "Print GDB protocol information");
     ("--sw-breakpoint", Arg.Unit (fun _ -> run_type := Runner.Breakpoint Gdb.Software), "Use a software breakpoint");
+    ("--wait-for-breakpoint", Arg.Set wait_for_breakpoint, "Run the processor until it hits a breakpoint before running test");
+    ("--kill", Arg.Set kill, "Send a kill request at the end of the test");
   ]
 let anon_arg s =
   match !test_file with
@@ -32,5 +36,6 @@ let test_file =
 let script = Parser.read_test test_file
 let con = Gdb.connect !gdb_verbose;;
 let regs = Readregs.read_regs con;;
-Runner.run_test !verbose !run_type con regs script
-
+if !wait_for_breakpoint then ignore (Gdb.continue con None);;
+Runner.run_test !verbose !run_type con regs script;;
+if !kill then ignore (Gdb.kill con);;

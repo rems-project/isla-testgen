@@ -38,6 +38,9 @@ val continue : connection -> Z.t option -> bytes
 (** Execute a single step at the current PC, or the given address. *)
 val step : connection -> Z.t option -> bytes
 
+(** Send a kill request *)
+val kill : connection -> bytes
+
 type breakpoint = Software | Hardware | WriteWatch | ReadWatch | AccessWatch
 
 val insert_breakpoint :
