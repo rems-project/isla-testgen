@@ -5,6 +5,7 @@ authors = ["Brian Campbell <Brian.Campbell@ed.ac.uk>"]
 edition = "2018"
 license = "BSD-2-Clause"
 readme = "../README.md"
+build = "build.rs"
 
 [[bin]]
 name = "isla-testgen"
@@ -14,12 +15,20 @@ path = "src/testgen.rs"
 name = "decode-from-tags"
 path = "src/decode_from_tags.rs"
 
+[[bin]]
+name = "acl2-insts-test"
+path = "src/acl2_insts_test.rs"
+
+[build-dependencies]
+lalrpop = "0.19.0"
+
 [dependencies]
 crossbeam = "0.7.3"
 getopts = "0.2.21"
 isla-lib = { path = "isla/isla-lib" }
 isla-axiomatic = { path = "isla/isla-axiomatic" }
 isla = { path = "isla" }
+lalrpop-util = "0.19.0"
 rand = "0.7.3"
 regex = "1.3.1"
 lazy_static = "1.4.0"

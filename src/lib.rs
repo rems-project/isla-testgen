@@ -30,6 +30,11 @@
 #[macro_use]
 extern crate lazy_static;
 
+#[macro_use]
+extern crate lalrpop_util;
+
+pub mod acl2_insts;
+lalrpop_mod!(pub acl2_insts_parser);
 pub mod asl_tag_files;
 pub mod execution;
 pub mod extract_state;

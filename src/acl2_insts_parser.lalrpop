@@ -1,0 +1,17 @@
+use crate::acl2_insts::Sexp;
+
+grammar;
+
+pub Sexp: Sexp<'input> = {
+  <s:r"[:#A-Za-z0-9/.<>=_?-]+"> => Sexp::Item(s),
+  <s:r#""[^"]*""#> => Sexp::Item(&s[1..s.len() - 1]),
+  "(" <items:Sexp+> ")" => Sexp::Seq(items),
+  "'" <s:Sexp> => s,
+}
+
+match {
+    r"\s*" => { }, // The default whitespace skipping is disabled an `ignore pattern` is specified
+    r";;[^\n\r]*[\n\r]*" => { },
+} else {
+    _
+}
