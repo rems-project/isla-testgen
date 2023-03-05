@@ -35,6 +35,7 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::fs::File;
 use std::num::ParseIntError;
 use std::ops::Range;
 use std::process::exit;
@@ -47,6 +48,8 @@ use isla_lib::memory::{Address, Memory};
 use isla_lib::simplify::write_events;
 use isla_lib::smt::{Checkpoint, Event};
 
+use isla_testgen::acl2_insts;
+use isla_testgen::acl2_insts_parser;
 use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
 use isla_testgen::extract_state;
@@ -97,17 +100,30 @@ fn parse_instruction_masks(little_endian: bool, args: &[String]) -> Vec<(&str, O
     v
 }
 
+enum Encodings<'a, B:BV> {
+    ASL(asl_tag_files::Encodings),
+    ACL2(Vec<acl2_insts::Instr<'a, B>>),
+}
+
 fn instruction_opcode<B: BV>(
     little_endian: bool,
-    encodings: &asl_tag_files::Encodings,
+    encodings: &Encodings<B>,
     isa_config: &ISAConfig<B>,
     instruction: &str,
     register_bias: bool,
 ) -> (B, bool, String) {
     let (opcode, random, description) = if instruction == "_" {
-        let (opcode, description) = encodings.random(asl_tag_files::Encoding::A64, register_bias);
+        use Encodings::*;
+        let (opcode, description) =
+            match encodings {
+                ASL(encodings) => {
+                    let (op,d) = encodings.random(asl_tag_files::Encoding::A64, register_bias);
+                    (B::from_u32(op), d)
+                }
+                ACL2(encodings) => acl2_insts::sample(encodings),
+            };
         println!("Instruction {:#010x}: {}", opcode, description);
-        (B::from_u32(opcode), true, description)
+        (opcode, true, description)
     } else if instruction.starts_with("0x") {
         println!("Instruction {}", instruction);
         let (opcode_str, description) =
@@ -146,6 +162,7 @@ fn isla_main() -> i32 {
     opts.optopt("a", "target-arch", "target architecture", "aarch64/morello/morello-aarch64/morello-el3/x86");
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
+    opts.optopt("", "acl2-insts", "parse instruction encodings in ACL2 format", "<file>");
     opts.optopt("o", "output", "base name for output files", "<file>");
     opts.optopt("n", "number-gens", "number of tests to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
@@ -228,11 +245,22 @@ fn testgen_main<T: Target, B: BV>(
     let exclusions = matches.opt_strs("exclude");
 
     let tag_files = matches.opt_strs("tag-file");
-    let encodings = if tag_files.is_empty() {
-        asl_tag_files::Encodings::default()
-    } else {
-        asl_tag_files::read_tag_files(&tag_files, &exclusions)
-    };
+    let acl2_file = matches.opt_str("acl2-insts");
+    let encodings =
+        if let Some(file_name) = acl2_file {
+            let file = File::open(&file_name).unwrap_or_else(|err| panic!("Unable to open tag file {}: {}", file_name, err));
+            let input = std::io::read_to_string(file).unwrap();
+            let sexp = acl2_insts_parser::SexpParser::new().parse(Box::leak(Box::new(input))).unwrap();
+            let instrs = acl2_insts::parse_instrs::<B>(Box::leak(Box::new(sexp))).unwrap();
+            Encodings::ACL2(instrs)
+        } else {
+            let encodings = if tag_files.is_empty() {
+                asl_tag_files::Encodings::default()
+            } else {
+                asl_tag_files::read_tag_files(&tag_files, &exclusions)
+            };
+            Encodings::ASL(encodings)
+        };
 
     let register_types: HashMap<Name, Ty<Name>> = arch
         .iter()
@@ -374,7 +402,7 @@ fn testgen_main<T: Target, B: BV>(
     0
 }
 
-struct TestConf<'ir, B> {
+struct TestConf<'ir, B: BV> {
     instructions: &'ir [(&'ir str, Option<u32>)],
     max_retries: i32,
     shared_state: &'ir SharedState<'ir, B>,
@@ -384,7 +412,7 @@ struct TestConf<'ir, B> {
     dump_all_events: bool,
     little_endian: bool,
     isa_config: &'ir ISAConfig<B>,
-    encodings: &'ir asl_tag_files::Encodings,
+    encodings: &'ir Encodings<'ir, B>,
     stop_conditions: &'ir StopConditions,
     exception_stop_conditions: &'ir StopConditions,
     exceptions_allowed_at: &'ir HashSet<usize>,
