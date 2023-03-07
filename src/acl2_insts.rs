@@ -21,6 +21,7 @@ pub enum Operand<'a> {
 pub struct Instr<'a, B:BV> {
     pub name: &'a str,
     pub opcode: B,
+    pub opcode_in_reg: Option<u8>,
     pub opcode_remainder: &'a [Sexp<'a>],
     pub operands: Vec<Operand<'a>>,
     pub implementation: &'a Sexp<'a>,
@@ -51,10 +52,10 @@ impl<'a> fmt::Display for Operand<'a> {
 
 impl<'a, B:BV> fmt::Display for Instr<'a, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} [", self.name, self.opcode)?;
-for s in self.opcode_remainder {
-  write!(f, "{} ", s)?;
-}
+        write!(f, "{} {} {:?} [", self.name, self.opcode, self.opcode_in_reg)?;
+        for s in self.opcode_remainder {
+            write!(f, "{} ", s)?;
+        }
         let mut oper_iter = self.operands.iter().peekable();
         loop {
             match oper_iter.next() {
@@ -69,17 +70,22 @@ for s in self.opcode_remainder {
     }
 }
 
-fn parse_opcode<'a, B:BV>(sexp: &'a Sexp<'a>) -> Result<(B, &'a [Sexp<'a>]), String> {
+fn parse_opcode<'a, B:BV>(sexp: &'a Sexp<'a>) -> Result<(B, Option<u8>, &'a [Sexp<'a>]), String> {
     use Sexp::*;
     match sexp {
         Seq(items) =>
             match items[..] {
                 [Item("OP"), Item(":OP"), Item(opcode), ref rest @ ..] => {
+                    let (reg, rest) = match rest {
+                        [Item(":REG"), Item(reg), ref rest @ ..] =>
+                            (Some(B::from_str(reg).unwrap().lower_u8()), rest),
+                        rest => (None, rest),
+                    };
                     let opcode = B::from_str(opcode).ok_or_else(|| format!("Bad opcode: {}", opcode))?;
                     if opcode.len() % 8 == 0 {
-                        Ok((opcode,rest))
+                        Ok((opcode, reg, rest))
                     } else {
-                        Ok((opcode.zero_extend(opcode.len() + 8 - (opcode.len() % 8)), rest))
+                        Ok((opcode.zero_extend(opcode.len() + 8 - (opcode.len() % 8)), reg, rest))
                     }
                 }
                 _ => Err(format!("Bad opcode: {:?}", sexp)),
@@ -127,9 +133,9 @@ impl<'a, B:BV> TryFrom<&'a Sexp<'a>> for Instr<'a, B> {
         let items = match sexp { Seq(v) => v, Item(_) => return Err(fail()) };
         match &items[..] {
             [Item("INST"), Item(name), op, arg, implementation, exceptions, ..] => {
-                let (opcode, opcode_remainder) = parse_opcode(op)?;
+                let (opcode, opcode_in_reg, opcode_remainder) = parse_opcode(op)?;
                 let operands = parse_arg(arg)?;
-                Ok(Instr { name, opcode, opcode_remainder, operands, implementation, exceptions })
+                Ok(Instr { name, opcode, opcode_in_reg, opcode_remainder, operands, implementation, exceptions })
             }
             _ => return Err(fail()),
         }
@@ -193,7 +199,7 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
     let mut rng = rand::thread_rng();
     let i = rng.gen_range(0, instructions.len());
     let instr = &instructions[i];
-    let mut modrm_reg: Option<u8> = None;
+    let mut modrm_reg: Option<u8> = instr.opcode_in_reg.map(|b| b << 3);
     let mut modrm_rm: Option<u8> = None;
     let mut sib: Option<u8> = None;
     let mut imm_bytes = 0;
@@ -221,7 +227,7 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
                         } else if byte & 0x7 == 0b101 {
                             disp_bytes = 4;
                         }
-                    } else if byte & 0xc0 == 0x80 {
+                    } else if byte & 0xc0 == 0x40 {
                         disp_bytes = 1;
                         if byte & 0x7 == 0b100 {
                             sib = Some(rng.gen());
@@ -263,7 +269,7 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
             Some((rm & 0xc7) | (reg & 0x38))
         }
     };
-    let encoding_be =
+    let mut encoding_be =
         if let Some(byte) = modrm {
             let e = instr.opcode.append(B::new(byte as u64, 8)).unwrap();
             if let Some(byte) = sib {
@@ -275,10 +281,10 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
             instr.opcode
         };
     for _i in 0..disp_bytes {
-        instr.opcode.append(B::new(rng.gen_range(0,256), 8));
+        encoding_be = encoding_be.append(B::new(rng.gen_range(0,256), 8)).unwrap();
     }
     for _i in 0..imm_bytes {
-        instr.opcode.append(B::new(rng.gen_range(0,256), 8));
+        encoding_be = encoding_be.append(B::new(rng.gen_range(0,256), 8)).unwrap();
     }
     // The opcode maps are in big endian (?!), and we also add modrm
     // in the least significant byte, so reverse it.
