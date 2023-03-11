@@ -257,7 +257,10 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
             Addressing("Y", _) => (),
             // TODO: Cue for REX prefix?
             Register(_) => (),
-            _ => panic!("Don't support operand {} yet", operand),
+            _ => {
+                eprintln!("Instruction sampling failure: don't support operand {} for instruction {} yet", operand, instr);
+                return sample(instructions);
+            }
         }
     }
     // TODO: more operands, prefixes, superscripts

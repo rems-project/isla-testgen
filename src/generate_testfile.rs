@@ -17,9 +17,10 @@ pub fn make_testfile<B: BV, T: Target>(
     steps: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut test_file = File::create(&format!("{}.test", base_name))?;
+    let alignment = 1 << T::pc_alignment_pow();
     for (region, contents) in pre_post_states.code.iter() {
         let mut ptr = region.start;
-        for chunk in contents.chunks(T::pc_alignment() as usize) {
+        for chunk in contents.chunks(alignment as usize) {
             let chunk_le: Vec<u8> = chunk.iter().cloned().rev().collect();
             let chunk_b = B::from_bytes(&chunk_le);
             write!(test_file, "mem {:#x} {} 0x{:x}", ptr, chunk_b.len(), chunk_b)?;
@@ -28,7 +29,7 @@ pub fn make_testfile<B: BV, T: Target>(
             } else {
                 writeln!(test_file)?;
             }
-            ptr += T::pc_alignment() as u64;
+            ptr += alignment as u64;
         }
     }
 
@@ -80,9 +81,13 @@ pub fn make_testfile<B: BV, T: Target>(
     // TODO: we can probably check more with gdb than the harnesses
     let post_regs = target.post_regs();
 
-    for ((zregister, accessor), val) in pre_post_states.post_registers.iter() {
+    for ((zregister, zaccessor), val) in pre_post_states.post_registers.iter() {
         let register = zencode::decode(zregister);
-        if T::is_gpr(zregister).is_some() || post_regs.iter().any(|(r,a)| *r == register && a == accessor) {
+        let accessor: Vec<GVAccessor<String>> = zaccessor.iter().map(|a| match a {
+            GVAccessor::Field(s) => GVAccessor::Field(zencode::decode(s)),
+            GVAccessor::Element(i) => GVAccessor::Element(*i),
+        }).collect();
+        if T::is_gpr(zregister).is_some() || post_regs.iter().any(|(r,a)| *r == register && *a == *accessor) {
             let mut names: Vec<String> = vec![register.to_string()];
             let mut accessors: Vec<String> = accessor.iter().map(|acc| acc.to_string()).collect();
             names.append(&mut accessors);

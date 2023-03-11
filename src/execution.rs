@@ -275,6 +275,15 @@ fn resolve_concrete_pc<'ir, B: BV>(
     }
 }
 
+fn just_check<B: BV>(solver: &mut Solver<B>, s: &str) -> Result<(), String> {
+    match solver.check_sat() {
+        SmtResult::Sat => Ok(()),
+        SmtResult::Unsat => Err(format!("Unsatisfiable at {}", s)),
+        SmtResult::Unknown => Err(format!("Solver returned unknown at {}", s)),
+    }
+}
+    
+
 fn postprocess<'ir, B: BV, T: Target>(
     target: &T,
     tid: usize,
@@ -289,20 +298,27 @@ fn postprocess<'ir, B: BV, T: Target>(
     
     log_from!(tid, log::VERBOSE, "Postprocessing");
 
+    just_check(&mut solver, "start of postprocessing")?;
+
     // Ensure the new PC can be placed in memory
     // (currently this is used to prevent an exception)
+    let alignment_pow = T::pc_alignment_pow();
     let pc_id = shared_state.symtab.lookup(T::pc_reg());
     match resolve_concrete_pc(local_frame.regs_mut(), pc_id, shared_state, &mut solver)? {
 	SymbolicPC(v) => {
 	    let pc_exp = Exp::Var(v);
 	    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver, None);
 	    solver.add(Def::Assert(pc_constraint));
+            just_check(&mut solver, "post-instruction PC constraint")?;
 	    // Alignment constraint
-	    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(1,0,Box::new(pc_exp))), Box::new(bits64(0,2)))));
+            if alignment_pow > 0 {
+	        solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Extract(alignment_pow - 1,0,Box::new(pc_exp))), Box::new(bits64(0,alignment_pow)))));
+                just_check(&mut solver, "post-instruction PC alignment constraint")?;
+            }
 	}
 	ConcretePC(b) => {
 	    if let Ok(pc_i) = b.try_into() {
-                let alignment = T::pc_alignment();
+                let alignment = 1 << alignment_pow;
 		if local_frame.memory().access_check(pc_i, alignment, SmtKind::ReadInstr) {
 		    if pc_i % alignment as u64 != 0 {
 			return Err(format!("Unaligned concrete PC: {}", pc_i))
@@ -555,6 +571,8 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
     let read_exp = smt_value(&read_val).unwrap();
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(read_exp))));
 
+    assert!(solver.check_sat().is_sat().unwrap());
+
     (opcode_var, checkpoint(&mut solver))
 }
 
@@ -640,7 +658,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     for (f, pc) in backtrace.iter().rev() {
                         log_from!(tid, log::VERBOSE, format!("  {} @ {}", shared_state.symtab.to_str(*f), pc));
                     }
-                    collected.push((Err(format!("Error {:?}", err)), events))
+                    collected.push((Err(format!("Error {}", err)), events))
                 }
             }
         },

@@ -13,7 +13,7 @@ let bytes_of_z size z =
   Bytes.init size (fun i ->
       Char.chr (Z.to_int (Z.extract z (8*i) 8)))
 
-let run_test verbose run_type con regs test =
+let setup verbose con regs test =
   let regmap = Regmap.map in
   let set = function
     | Register r ->
@@ -30,7 +30,11 @@ let run_test verbose run_type con regs test =
        if verbose then Printf.printf "Writing %s (%d bits) to %s\n%!" (Z.format "#x" m.value) m.size (Z.format "#x" m.address);
        Gdb.write_memory con m.address (bytes_of_z (m.size / 8) m.value)
   in
-  List.iter set test.prestate;
+  List.iter set test.prestate
+
+let run_test verbose run_type con regs test =
+  let regmap = Regmap.map in
+  setup verbose con regs test;
   let execute () =
     match run_type with
     | Breakpoint bp_type -> begin

@@ -66,7 +66,7 @@ where
         regs: HashMap<String, Sym>,
     );
     fn translation_table_info(&self) -> Option<TranslationTableInfo>;
-    fn pc_alignment() -> u32;
+    fn pc_alignment_pow() -> u32;
     fn pc_reg() -> &'static str;
     fn number_gprs() -> u32;
     fn is_gpr(name: &str) -> Option<u32>;
@@ -123,7 +123,7 @@ impl Target for Aarch64 {
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
         None
     }
-    fn pc_alignment() -> u32 { 4 }
+    fn pc_alignment_pow() -> u32 { 2 }
     fn pc_reg() -> &'static str { "z_PC" }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
@@ -468,7 +468,7 @@ impl Target for Morello {
     ) -> Result<(), String> {
         Ok(())
     }
-    fn pc_alignment() -> u32 { 4 }
+    fn pc_alignment_pow() -> u32 { 2 }
     fn pc_reg() -> &'static str { "z_PC" }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
@@ -513,6 +513,15 @@ const X86_GPRS : [&str; 16] =
     ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp", 
      "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
 
+impl X86 {
+    fn common_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
+        vec![
+            (String::from("rflags"),vec![GVAccessor::Field(String::from("bits"))]),
+            (String::from("rip"),vec![]),
+        ]
+    }
+}
+
 impl Target for X86 {
     /// Model initialisation function
     // Bit of a cheat; using this to get to 64bit mode, currently works because the
@@ -525,6 +534,7 @@ impl Target for X86 {
         // Appears to be the default I got from ld on Linux
         0x401000
     }
+            
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
@@ -532,13 +542,13 @@ impl Target for X86 {
             .iter()
             .map(|r| (r.to_string(), vec![]))
             .collect();
-        regs.push((String::from("rflags"),vec![GVAccessor::Field(String::from("bits"))]));
+        regs.append(&mut self.common_regs());
         regs
     }
     /// Registers that the harness wants even if they're not in the trace
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
     /// System registers that the harness should check
-    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { self.common_regs() }
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
@@ -549,7 +559,7 @@ impl Target for X86 {
         _regs: HashMap<String, Sym>,
     ) { }
     fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
-    fn pc_alignment() -> u32 { 1 }
+    fn pc_alignment_pow() -> u32 { 0 }
     fn pc_reg() -> &'static str { "zrip" }
     fn number_gprs() -> u32 { X86_GPRS.len() as u32 }
     fn is_gpr(name: &str) -> Option<u32> {

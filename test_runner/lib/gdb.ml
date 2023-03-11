@@ -202,6 +202,9 @@ let step con addr_opt = cont con "s" addr_opt
 let kill con =
   send_command con (start_command "k");
   read_response con
+let detach con =
+  send_command con (start_command "D");
+  read_response con
 
 type breakpoint = Software | Hardware | WriteWatch | ReadWatch | AccessWatch
 

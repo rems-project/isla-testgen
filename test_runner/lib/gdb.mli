@@ -41,6 +41,9 @@ val step : connection -> Z.t option -> bytes
 (** Send a kill request *)
 val kill : connection -> bytes
 
+(** Send a detach request *)
+val detach : connection -> bytes
+
 type breakpoint = Software | Hardware | WriteWatch | ReadWatch | AccessWatch
 
 val insert_breakpoint :
