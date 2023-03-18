@@ -29,13 +29,17 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use isla_lib::bitvector::BV;
+use isla_lib::bitvector::{BV, b64::B64};
 use isla_lib::executor::LocalFrame;
-use isla_lib::ir::{SharedState};
+use isla_lib::ir::{Name, SharedState, Ty, Val};
+use isla_lib::primop_util::smt_value;
+use isla_lib::smt;
 use isla_lib::smt::{smtlib, Solver, Sym};
-use isla_lib::smt::smtlib::bits64;
+use isla_lib::smt::smtlib::{bits64, Exp};
+use isla_lib::source_loc::SourceLoc;
 use isla_lib::zencode;
 
+use crate::execution;
 use crate::extract_state::GVAccessor;
 
 // For now we only need one entry in the translation table (and only
@@ -56,6 +60,28 @@ where
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// System registers that the harness should check
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
+    /// Special setup for some registers
+    fn special_reg_init<'ctx, 'ir, B: BV>(
+        &self,
+        reg: &str,
+        acc: &Vec<GVAccessor<String>>,
+        ty: &Ty<Name>,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        ctx: &'ctx smt::Context,
+        solver: &mut Solver<'ctx, B>,
+    ) -> Option<(Sym, Val<B>)>;
+    /// Special encoding for some registers in post-state
+    fn special_reg_encode<'ctx, 'ir, B: BV>(
+        &self,
+        reg: &str,
+        acc: &Vec<GVAccessor<String>>,
+        ty: &Ty<Name>,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        ctx: &'ctx smt::Context,
+        solver: &mut Solver<'ctx, B>,
+    ) -> Option<Val<B>>;
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
@@ -63,11 +89,11 @@ where
         frame: &mut LocalFrame<'ir, B>,
         solver: &mut Solver<B>,
         init_pc: u64,
-        regs: HashMap<String, Sym>,
+        regs: &HashMap<String, Sym>,
     );
     fn translation_table_info(&self) -> Option<TranslationTableInfo>;
     fn pc_alignment_pow() -> u32;
-    fn pc_reg() -> &'static str;
+    fn pc_reg(&self) -> (String, Vec<GVAccessor<String>>);
     fn number_gprs() -> u32;
     fn is_gpr(name: &str) -> Option<u32>;
     fn gpr_prefix() -> &'static str;
@@ -111,20 +137,40 @@ impl Target for Aarch64 {
         vec![]
     }
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
+    fn special_reg_init<'ctx, 'ir, B: BV>(
+        &self,
+        _reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        _ty: &Ty<Name>,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _ctx: &'ctx smt::Context,
+        _solver: &mut Solver<'ctx, B>,
+    ) -> Option<(Sym, Val<B>)> { None }
+    fn special_reg_encode<'ctx, 'ir, B: BV>(
+        &self,
+        _reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        _ty: &Ty<Name>,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _ctx: &'ctx smt::Context,
+        _solver: &mut Solver<'ctx, B>,
+    ) -> Option<Val<B>> { None }
     fn init<'ir, B: BV>(
         &self,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<B>,
         _solver: &mut Solver<B>,
         _init_pc: u64,
-        _regs: HashMap<String, Sym>,
+        _regs: &HashMap<String, Sym>,
     ) {
     }
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
         None
     }
     fn pc_alignment_pow() -> u32 { 2 }
-    fn pc_reg() -> &'static str { "z_PC" }
+    fn pc_reg(&self) -> (String, Vec<GVAccessor<String>>) { (String::from("z_PC"), vec![]) }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("zR") {
@@ -290,13 +336,33 @@ impl Target for Morello {
             None
         }
     }
+    fn special_reg_init<'ctx, 'ir, B: BV>(
+        &self,
+        _reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        _ty: &Ty<Name>,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _ctx: &'ctx smt::Context,
+        _solver: &mut Solver<'ctx, B>,
+    ) -> Option<(Sym, Val<B>)> { None }
+    fn special_reg_encode<'ctx, 'ir, B: BV>(
+        &self,
+        _reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        _ty: &Ty<Name>,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _ctx: &'ctx smt::Context,
+        _solver: &mut Solver<'ctx, B>,
+    ) -> Option<Val<B>> { None }
     fn init<'ir, B: BV>(
         &self,
         shared_state: &SharedState<'ir, B>,
         local_frame: &mut LocalFrame<'ir, B>,
         solver: &mut Solver<B>,
         init_pc: u64,
-        regs: HashMap<String, Sym>,
+        regs: &HashMap<String, Sym>,
     ) {
         use isla_lib::ir::*;
         match local_frame.lets().get(&shared_state.symtab.lookup("z__a64_version")) {
@@ -355,7 +421,7 @@ impl Target for Morello {
             use isla_lib::smt::smtlib::*;
             if self.aarch64_compatible() && reg.starts_with("_R") {
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(128, 64, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Extract(128, 64, Box::new(Exp::Var(*v)))),
                     Box::new(Exp::Bits(vec![false; 129 - 64])),
                 )));
             }
@@ -367,7 +433,7 @@ impl Target for Morello {
                 let fixed = if self.aarch64_compatible() { 0x00000000 } else { 0x00000200 };
 
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Bvand(Box::new(bits64(mask, 32)), Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bvand(Box::new(bits64(mask, 32)), Box::new(Exp::Var(*v)))),
                     Box::new(bits64(fixed, 32)),
                 )));
             }
@@ -389,7 +455,7 @@ impl Target for Morello {
                             reserved_mask | fixed_mask,
                             64,
                         )),
-                        Box::new(Exp::Var(v)),
+                        Box::new(Exp::Var(*v)),
                     )),
                     Box::new(bits64(
                         reserved_vals | fixed_vals,
@@ -404,10 +470,10 @@ impl Target for Morello {
                 // translation, because without the MMU the memory will appear to be Device
                 // Memory and the translation stub checks that all accesses are aligned.
 		if self.translation_in_symbolic_execution {
-		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
+		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(*v)),
 						   Box::new(bits64(0x30d5d985, 64)))));
 		} else {
-		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(v)),
+		    solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(*v)),
 						   Box::new(bits64(0x30d5d99e, 64)))));
 		}
 	    }
@@ -416,19 +482,19 @@ impl Target for Morello {
                     | 0b1 // fix page table tag generation bit (want to avoid unnecessary fork)
                     | 0b10000; // Leave C64E = 0 for the harness
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Bvand(Box::new(bits64(mask, 32)), Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Bvand(Box::new(bits64(mask, 32)), Box::new(Exp::Var(*v)))),
                     Box::new(bits64(0, 32)),
                 )));
             }
             if reg == "PCC" {
                 assert!(!self.aarch64_compatible());
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Extract(63, 0, Box::new(Exp::Var(*v)))),
                     Box::new(bits64(init_pc, 64)))));
                 // The harness needs the PCC to have the executive permission for now
                 if !self.run_in_el0() {
                     solver.add(Def::Assert(Exp::Eq(
-                        Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(v)))),
+                        Box::new(Exp::Extract(111, 111, Box::new(Exp::Var(*v)))),
                         Box::new(bits64(1, 1)))));
                 }
             }
@@ -436,24 +502,24 @@ impl Target for Morello {
                 // Force Morello on for EL0/1 for now (ensures that we can check the full PCC
                 // from CELR_EL1)
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(19, 18, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Extract(19, 18, Box::new(Exp::Var(*v)))),
                     Box::new(bits64(0b11, 2)))));
             }
             if reg == "VBAR_EL1" {
                 // Keep it sufficiently aligned rather than making the harness do it
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(10, 0, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Extract(10, 0, Box::new(Exp::Var(*v)))),
                     Box::new(bits64(0, 11)))));
                 // Make the capability bounds use the value to avoid an annoying case split by not using internal exponent
                 // TODO: make this configurable
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(94, 94, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Extract(94, 94, Box::new(Exp::Var(*v)))),
                     Box::new(bits64(1, 1)))));
             }
             if reg == "CCTLR_EL1" {
                 // RES0 fields; really just to ensure that the register appears in the SMT model
                 solver.add(Def::Assert(Exp::Eq(
-                    Box::new(Exp::Extract(31, 8, Box::new(Exp::Var(v)))),
+                    Box::new(Exp::Extract(31, 8, Box::new(Exp::Var(*v)))),
                     Box::new(bits64(0, 24)))));
             }
         }
@@ -469,7 +535,7 @@ impl Target for Morello {
         Ok(())
     }
     fn pc_alignment_pow() -> u32 { 2 }
-    fn pc_reg() -> &'static str { "z_PC" }
+    fn pc_reg(&self) -> (String, Vec<GVAccessor<String>>) { (String::from("z_PC"), vec![]) }
     fn number_gprs() -> u32 { 31 }
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("z_R") {
@@ -507,11 +573,18 @@ impl Target for Morello {
     }
 }
 
-pub struct X86 {}
+pub enum X86Style { Plain, Cap }
+
+pub struct X86 {
+    pub style: X86Style
+}
 
 const X86_GPRS : [&str; 16] = 
     ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp", 
      "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+
+const C86_REGS : [&str; 3] =
+    ["ddc", "cfs", "cgs"];
 
 impl X86 {
     fn common_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
@@ -543,12 +616,101 @@ impl Target for X86 {
             .map(|r| (r.to_string(), vec![]))
             .collect();
         regs.append(&mut self.common_regs());
+        match self.style {
+            X86Style::Plain => (),
+            X86Style::Cap =>
+            for r in C86_REGS {
+                regs.push((r.to_string(), vec![]));
+            }
+        };
+        // TODO: remove hack (repeats rip with field name to ensure that the address is extracted in extract_state)
+        match self.style {
+            X86Style::Plain => (),
+            X86Style::Cap => regs.push((String::from("rip"), vec![GVAccessor::Field(String::from("address"))])),
+        };
         regs
     }
     /// Registers that the harness wants even if they're not in the trace
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
     /// System registers that the harness should check
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { self.common_regs() }
+    fn special_reg_init<'ctx, 'ir, B: BV>(
+        &self,
+        _reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        ty: &Ty<Name>,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        ctx: &'ctx smt::Context,
+        solver: &mut Solver<'ctx, B>,
+    ) -> Option<(Sym, Val<B>)> {
+        // TODO: use accessor?
+        match ty {
+            Ty::Struct(struct_name) if shared_state.symtab.get("zCapability") == Some(*struct_name) => {
+                let var = solver.declare_const(smtlib::Ty::BitVec(129), SourceLoc::unknown());
+                let tag = solver.define_const(
+                    Exp::Eq(Box::new(Exp::Extract(128, 128, Box::new(Exp::Var(var)))),
+                            Box::new(Exp::Bits64(B64::new(1, 1)))),
+                    SourceLoc::unknown());
+                let content = solver.define_const(Exp::Extract(127, 0, Box::new(Exp::Var(var))), SourceLoc::unknown());
+                let val = execution::run_function_solver(
+                    shared_state,
+                    frame,
+                    ctx,
+                    solver,
+                    "memBitsToCapability",
+                    vec![Val::Symbolic(tag), Val::Symbolic(content)]
+                );
+                Some((var, val))
+            }
+            _ => None
+        }
+    }
+    fn special_reg_encode<'ctx, 'ir, B: BV>(
+        &self,
+        reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        ty: &Ty<Name>,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        ctx: &'ctx smt::Context,
+        solver: &mut Solver<'ctx, B>,
+    ) -> Option<Val<B>> {
+        // TODO: use accessor?
+        let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
+        match ty {
+            Ty::Struct(struct_name) if shared_state.symtab.get("zCapability") == Some(*struct_name) => {
+                let struct_val = frame.regs().get_last_if_initialized(name).unwrap().clone();
+                let tag_name = shared_state.symtab.get("ztag").unwrap();
+                let tag = match &struct_val {
+                    Val::Struct(fields) => fields.get(&tag_name).unwrap().clone(),
+                    _ => panic!("Capability register {} wasn't a struct", reg),
+                };
+                let tag = match tag {
+                    Val::Bool(b) => Exp::Bits64(B64::new(if b { 1 } else { 0 }, 1)),
+                    Val::Symbolic(v) => Exp::Ite(
+                        Box::new(Exp::Var(v)),
+                        Box::new(Exp::Bits64(B64::new(1,1))),
+                        Box::new(Exp::Bits64(B64::new(0,1)))
+                    ),
+                    _ => panic!("Unexpected value for capability tag in {}: {:?}", reg, tag),
+                };
+                let content = execution::run_function_solver(
+                    shared_state,
+                    frame,
+                    ctx,
+                    solver,
+                    "capToMemBits",
+                    vec![struct_val]
+                );
+                let content = smt_value(&content, SourceLoc::unknown()).unwrap();
+                eprintln!("Reg {}, concat {:?} {:?}", reg, tag, content);
+                let var = solver.define_const(Exp::Concat(Box::new(tag), Box::new(content)), SourceLoc::unknown());
+                Some(Val::Symbolic(var))
+            }
+            _ => None
+        }
+    }
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
@@ -556,11 +718,16 @@ impl Target for X86 {
         _frame: &mut LocalFrame<'ir, B>,
         _solver: &mut Solver<B>,
         _init_pc: u64,
-        _regs: HashMap<String, Sym>,
+        _regs: &HashMap<String, Sym>,
     ) { }
     fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
     fn pc_alignment_pow() -> u32 { 0 }
-    fn pc_reg() -> &'static str { "zrip" }
+    fn pc_reg(&self) -> (String, Vec<GVAccessor<String>>) {
+        match self.style {
+            X86Style::Plain => (String::from("zrip"), vec![]),
+            X86Style::Cap => (String::from("zrip"), vec![GVAccessor::Field(String::from("address"))]),
+        }
+    }
     fn number_gprs() -> u32 { X86_GPRS.len() as u32 }
     fn is_gpr(name: &str) -> Option<u32> {
         let name = zencode::decode(name);

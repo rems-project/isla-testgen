@@ -34,6 +34,7 @@ use std::fmt;
 use std::ops::Range;
 
 use crate::target::Target;
+use crate::execution::{apply_accessor_type, apply_accessor_val};
 
 use isla_lib::bitvector::BV;
 use isla_lib::config::ISAConfig;
@@ -46,7 +47,7 @@ use isla_lib::log;
 use isla_lib::memory;
 use isla_lib::smt;
 use isla_lib::smt::smtlib::Exp;
-use isla_lib::smt::{Accessor, Checkpoint, Event, Model, SmtResult, Solver};
+use isla_lib::smt::{Sym, Accessor, Checkpoint, Event, Model, SmtResult, Solver};
 use isla_lib::zencode;
 
 // TODO: get smt.rs to return a BV
@@ -331,15 +332,43 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<'ir, B>,
     initial_frame: &Frame<'ir, B>,
+    final_frame: &Frame<'ir, B>,
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
     sparse: bool,
+    initial_register_map: &HashMap<String, Sym>,
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
+
+    // Ensure that we have symbolic values for all of the post-state registers
+    // before we ask for the model, because the target may need to execute
+    // encoding (e.g., for capabilities represented as structs)
+    let mut final_local_frame = isla_lib::executor::unfreeze_frame(final_frame);
+    let mut final_register_vals: HashMap<(String, Vec<GVAccessor<String>>), Val<B>> = HashMap::new();
+    for (reg, acc) in target.regs() {
+        let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
+        let ty = apply_accessor_type(shared_state, register_types.get(&name).unwrap(), &acc);
+        if let Some(val) = target.special_reg_encode(
+            &reg,
+            &acc,
+            &ty,
+            shared_state,
+            &mut final_local_frame,
+            &ctx,
+            &mut solver
+        ) {
+            final_register_vals.insert((reg,acc), val);
+        } else {
+            let full_val = final_local_frame.regs().get_last_if_initialized(name).unwrap();
+            let val = apply_accessor_val(shared_state, full_val, &acc);
+            final_register_vals.insert((reg,acc), val.clone());
+        }
+    }
+
     match solver.check_sat() {
         SmtResult::Sat => (),
         SmtResult::Unsat => return Err(ExecError::Z3Error(String::from("Unsatisfiable at recheck"))),
@@ -368,12 +397,13 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     // Ensure that system registers that are essential for the harness are included even
     // if they don't appear in the event trace.
     let initial_local_frame = isla_lib::executor::unfreeze_frame(initial_frame);
-    let initial_frame_registers = initial_local_frame.regs();
+//    let initial_frame_registers = initial_local_frame.regs();
     for (reg, acc) in target.essential_regs() {
         assert!(acc.is_empty()); // TODO
         if let Some(name) = shared_state.symtab.get(&zencode::encode(&reg)) {
-            if let Some(val) = initial_frame_registers.get_last_if_initialized(name) {
-                if let Some(ground_val) = get_model_val(&mut model, val)? {
+            if let Some(sym) = initial_register_map.get(&zencode::encode(&reg)) {
+//            if let Some(val) = initial_frame_registers.get_last_if_initialized(name) {
+                if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym))? {
                     initial_registers.insert((name, vec![]), ground_val);
                 } else {
                     return Err(ExecError::Unreachable(format!("Essential system register {} does not have a value", reg)));
@@ -384,6 +414,25 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         } else {
             panic!("Missing initial system register: {}", reg);
         }
+    }
+    for (reg, acc) in target.regs() {
+        if acc.is_empty() {
+            if let Some(name) = shared_state.symtab.get(&zencode::encode(&reg)) {
+                if let Some(sym) = initial_register_map.get(&reg) {
+                    if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym))? {
+                        initial_registers.insert((name, vec![]), ground_val);
+                    }
+                } else {
+                    return Err(ExecError::Unreachable(format!("Register {} was not initialised", reg)));
+                }
+            } else {
+                panic!("Missing initial system register: {}", reg);
+            }
+        }
+    }
+    for (regacc, val) in final_register_vals {
+        // TODO: the bool isn't right...
+        current_registers.insert(regacc_int(shared_state, &regacc), (true, get_model_val(&mut model, &val)?));
     }
 
     let mut init_complete = false;
@@ -400,9 +449,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     // any current value, especially as we want to find out if we need
                     // to set them in the actual test and so should not ignore the next
                     // write.
-                    for regacc in &harness_registers {
-                        current_registers.remove(regacc);
-                    }
+//                    for regacc in &harness_registers {
+//                        current_registers.remove(regacc);
+//                    }
                 }
                 let address = match get_model_val(&mut model, address)? {
                     Some(GroundVal::Bits(bs)) => bs,
@@ -492,6 +541,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
             // Look at assumptions too because they come from setting initial register values with -R
             Event::ReadReg(reg, accessors, value) | Event::AssumeReg(reg, accessors, value) => {
                 let is_assume = matches!(event, Event::AssumeReg(_,_,_));
+                let under_accessor = !accessors.is_empty();
                 let mut process_read_bits =
                     |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, skipped: &mut HashSet<_>| {
                         let key = (*reg, accessors.clone());
@@ -503,27 +553,29 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                 Ty::Bits(_) | Ty::Bool | Ty::I128 => {
                                     let model_value = get_model_val(&mut model, value).expect("get_model_val");
                                     if matches!(value, Val::Symbolic(_)) || is_assume {
-                                        if current_registers.insert(key.clone(), (true, model_value)).is_none() {
+/*                                        if current_registers.insert(key.clone(), (true, model_value)).is_none() {
                                             match model_value {
                                                 Some(val) => {
-                                                    initial_registers.insert(key, val);
+                                                    if under_accessor { // TODO: all init values should be above
+                                                        initial_registers.insert(key, val);
+                                                    }
                                                 }
                                                 None => println!(
                                                     "Ambivalent read of register {}",
                                                     regacc_to_str(shared_state, &key)
                                                 ),
                                             }
-                                        }
+                                        }*/
                                     } else {
                                         // Otherwise when we read a concrete initial value, so it comes from
-                                        // initialisation and does not need to be set by the harness
+/*                                        // initialisation and does not need to be set by the harness
                                         let post_init =
                                             if let Some((pi, _)) = current_registers.get(&key) {
                                                 *pi
                                             } else {
                                                 false
                                             };
-                                        current_registers.insert(key.clone(), (post_init, model_value));
+                                        current_registers.insert(key.clone(), (post_init, model_value));*/
                                     }
                                 }
                                 _ => {
@@ -564,9 +616,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                         match ty {
                             Ty::Bits(_) | Ty::Bool => {
                                 let val = get_model_val(&mut model, value).expect("get_model_val");
-                                if init_complete {
-                                    current_registers.insert(key, (true, val));
-                                }
+//                                if init_complete {
+//                                    current_registers.insert(key, (true, val));
+//                                }
                             }
                             _ => (),
                         }

@@ -61,8 +61,17 @@ pub fn make_testfile<B: BV, T: Target>(
         }
     }
 
+    let (pc_reg, pc_acc) = target.pc_reg();
+    let pc_acc: Vec<GVAccessor<String>> = pc_acc.iter().map(|a| match a {
+        GVAccessor::Field(s) => GVAccessor::Field(zencode::encode(s)),
+        GVAccessor::Element(i) => GVAccessor::Element(*i),
+    }).collect();
+    let pc_acc: Vec<GVAccessor<&str>> = pc_acc.iter().map(|a| match a {
+        GVAccessor::Field(s) => GVAccessor::Field(s.as_str()),
+        GVAccessor::Element(i) => GVAccessor::Element(*i),
+    }).collect();
     let post_pc =
-        match pre_post_states.post_registers.get(&(T::pc_reg(), vec![])) {
+        match pre_post_states.post_registers.get(&(&pc_reg, pc_acc)) {
             Some(GroundVal::Bits(bits)) => bits,
             Some(v) => panic!("Bad post-state PC: {:?}", v),
             None => panic!("Post-state PC missing"),

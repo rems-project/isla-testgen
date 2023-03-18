@@ -46,7 +46,7 @@ use isla_lib::executor::{Frame, StopAction, StopConditions};
 use isla_lib::ir::*;
 use isla_lib::memory::{Address, Memory};
 use isla_lib::simplify::write_events;
-use isla_lib::smt::{Checkpoint, Event};
+use isla_lib::smt::{Checkpoint, Event, Sym};
 
 use isla_testgen::acl2_insts;
 use isla_testgen::acl2_insts_parser;
@@ -188,6 +188,7 @@ fn isla_main() -> i32 {
     let translation_in_symbolic_execution = matches.opt_present("translation-in-symbolic-execution");
 
     use crate::target::MorelloStyle::*;
+    use crate::target::X86Style;
 
     match matches.opt_str("target-arch").as_deref().unwrap_or("aarch64") {
         "aarch64" => {
@@ -201,7 +202,8 @@ fn isla_main() -> i32 {
         "morello" => testgen_main(target::Morello { style: EL0, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         "morello-el3" => testgen_main(target::Morello { style: EL3Only, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         "morello-aarch64" => testgen_main(target::Morello { style: AArch64Compatible, translation_in_symbolic_execution }, hasher, opts, matches, arch),
-        "x86" => testgen_main(target::X86 { }, hasher, opts, matches, arch),
+        "x86" => testgen_main(target::X86 { style: X86Style::Plain }, hasher, opts, matches, arch),
+        "c86" => testgen_main(target::X86 { style: X86Style::Cap }, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1
@@ -320,7 +322,8 @@ fn testgen_main<T: Target, B: BV>(
     let instructions = parse_instruction_masks(little_endian, &matches.free);
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory, &target.init_function());
-    let (frame, checkpoint) = setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
+    let (frame, checkpoint, register_map) =
+        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
 
     let base_name = &matches.opt_str("output").unwrap_or(String::from("test"));
     let register_bias = !&matches.opt_present("uniform-registers");
@@ -346,6 +349,7 @@ fn testgen_main<T: Target, B: BV>(
         generate_testfile: matches.opt_present("test-file"),
         sparse: matches.opt_present("sparse"),
         init_pc,
+        register_map,
     };
 
     let all_paths_for = matches.opt_get("all-paths-for").expect("Bad all-paths-for argument");
@@ -423,6 +427,7 @@ struct TestConf<'ir, B: BV> {
     generate_testfile: bool,
     sparse: bool,
     init_pc: u64,
+    register_map: HashMap<String, Sym>,
 }
 
 #[derive(Debug)]
@@ -519,10 +524,12 @@ fn generate_test<'ir, B: BV, T: Target>(
         checkpoint,
         conf.shared_state,
         &conf.initial_frame,
+        &frame,
         conf.register_types,
         conf.symbolic_regions,
         conf.symbolic_code_regions,
         conf.sparse,
+        &conf.register_map,
     )?;
     if conf.generate_testfile {
         generate_testfile::make_testfile(target, basename, &instr_map, initial_state, conf.init_pc, opcode_index)?;
@@ -723,10 +730,12 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 checkpoint,
                 conf.shared_state,
                 &conf.initial_frame,
+                &frame,
                 conf.register_types,
                 conf.symbolic_regions,
                 conf.symbolic_code_regions,
                 conf.sparse,
+                &conf.register_map,
             ) {
                 Ok(initial_state) => {
                     had_success = true;

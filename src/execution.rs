@@ -39,7 +39,7 @@ use std::time::Instant;
 use crate::extract_state::GVAccessor;
 use crate::target::{Target, TranslationTableInfo};
 
-use isla_lib::bitvector::BV;
+use isla_lib::bitvector::{BV, b64::B64};
 use isla_lib::error::ExecError;
 use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions, TaskState};
@@ -240,6 +240,7 @@ enum PCResolved<B: BV> {
 fn resolve_concrete_pc<'ir, B: BV>(
     registers: &mut RegisterBindings<'ir, B>,
     pc_id: Name,
+    pc_accessor: Vec<GVAccessor<String>>,
     shared_state: &SharedState<'ir, B>,
     solver: &mut Solver<B>,
 ) -> Result<PCResolved<B>, String> {
@@ -247,31 +248,40 @@ fn resolve_concrete_pc<'ir, B: BV>(
     use PCResolved::*;
     
     match registers.get(pc_id, shared_state, solver, SourceLoc::unknown()).map_err(|e| format!("{}", e))? {
-	Some(Val::Symbolic(v)) => {
-	    if solver.check_sat().is_unsat().map_err(|e| format!("{}", e))? {
-		return Err(String::from("Unsatisfiable in post-processing"));
-	    }
-	    let model_val = {
-		let mut model = Model::new(solver);
-		model.get_var(*v).map_err(|e| format!("{}", e))?
-	    };
-	    match model_val {
-		Some(Exp::Bits64(result)) => {
-		    if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))))
-			.is_unsat().map_err(|e| format!("{}", e))? {
-			    let bits = B::new(result.lower_u64(), result.len());
-			    // Cache the concrete value
-                            registers.assign(pc_id, Val::Bits(bits), shared_state);
-			    Ok(ConcretePC(bits))
-			} else {
-			    Ok(SymbolicPC(*v))
-			}
-		},
-		_ => Ok(SymbolicPC(*v))
-	    }
-	}
-	Some(Val::Bits(bits)) => Ok(ConcretePC(*bits)),
-	value => Err(format!("Unexpected PC value: {:?}", value))
+        Some(full_val) => {
+            let pc_addr = apply_accessor_val(shared_state, full_val, &pc_accessor);
+            match pc_addr {
+	        Val::Symbolic(v) => {
+	            if solver.check_sat().is_unsat().map_err(|e| format!("{}", e))? {
+		        return Err(String::from("Unsatisfiable in post-processing"));
+	            }
+	            let model_val = {
+		        let mut model = Model::new(solver);
+		        model.get_var(*v).map_err(|e| format!("{}", e))?
+	            };
+	            match model_val {
+		        Some(Exp::Bits64(result)) => {
+		            if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))))
+			        .is_unsat().map_err(|e| format!("{}", e))? {
+			            let bits = B::new(result.lower_u64(), result.len());
+			            // Cache the concrete value
+                                    let mut new = full_val.clone();
+                                    let new_pc = apply_accessor_val_mut(shared_state, &mut new, &pc_accessor);
+                                    *new_pc = Val::Bits(bits);
+                                    registers.assign(pc_id, new, shared_state);
+			            Ok(ConcretePC(bits))
+			        } else {
+			            Ok(SymbolicPC(*v))
+			        }
+		        },
+		        _ => Ok(SymbolicPC(*v))
+	            }
+	        }
+	        Val::Bits(bits) => Ok(ConcretePC(*bits)),
+	        value => Err(format!("Unexpected PC value: {:?}", value))
+            }
+        }
+        None => Err(String::from("Missing PC register")),
     }
 }
 
@@ -303,8 +313,9 @@ fn postprocess<'ir, B: BV, T: Target>(
     // Ensure the new PC can be placed in memory
     // (currently this is used to prevent an exception)
     let alignment_pow = T::pc_alignment_pow();
-    let pc_id = shared_state.symtab.lookup(T::pc_reg());
-    match resolve_concrete_pc(local_frame.regs_mut(), pc_id, shared_state, &mut solver)? {
+    let (pc_name, pc_acc) = target.pc_reg();
+    let pc_id = shared_state.symtab.lookup(&pc_name);
+    match resolve_concrete_pc(local_frame.regs_mut(), pc_id, pc_acc, shared_state, &mut solver)? {
 	SymbolicPC(v) => {
 	    let pc_exp = Exp::Var(v);
 	    let pc_constraint = local_frame.memory().smt_address_constraint(&pc_exp, 4, SmtKind::ReadInstr, &mut solver, None);
@@ -371,16 +382,11 @@ pub enum RegSource {
     Uninit,
 }
 
-// Replace the given subfield of a value with a symbolic variable (if
-// it isn't already), and return the variable.  Used in register
-// initialisation, below.
-fn setup_val<'a, B: BV>(
+pub fn apply_accessor_type<'a, B: BV>(
     shared_state: &'a SharedState<B>,
-    mut val: &mut Val<B>,
     mut ty: &'a Ty<Name>,
-    accessor: Vec<GVAccessor<String>>,
-    solver: &mut Solver<B>,
-) -> Sym {
+    accessor: &[GVAccessor<String>],
+) -> &'a Ty<Name> {
     for acc in accessor {
         match acc {
             GVAccessor::Field(s) => {
@@ -388,30 +394,106 @@ fn setup_val<'a, B: BV>(
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match ty {
                     Ty::Struct(struct_name) => ty = shared_state.structs.get(struct_name).unwrap().get(&name).unwrap(),
-                    _ => panic!("Bad type for struct {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad type for struct {:?}", ty),
                 }
+            }
+            GVAccessor::Element(_i) => {
+                match ty {
+                    Ty::Vector(element_ty) => ty = element_ty,
+                    Ty::FixedVector(_, element_ty) => ty = element_ty,
+                    _ => panic!("Bad type for vector {:?}", ty),
+                }
+            }
+        }
+    }
+    ty
+}
+
+pub fn apply_accessor_val_mut<'a, B: BV>(
+    shared_state: &'a SharedState<B>,
+    mut val: &'a mut Val<B>,
+    accessor: &[GVAccessor<String>],
+) -> &'a mut Val<B> {
+    for acc in accessor {
+        match acc {
+            GVAccessor::Field(s) => {
+                let name =
+                    shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get_mut(&name).unwrap(),
                     _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
                 }
             }
             GVAccessor::Element(i) => {
-                match ty {
-                    Ty::Vector(element_ty) => ty = element_ty,
-                    Ty::FixedVector(_, element_ty) => ty = element_ty,
-                    _ => panic!("Bad type for vector {}", val.to_string(&shared_state.symtab)),
-                }
                 match val {
-                    Val::Vector(elements) => val = &mut elements[i],
+                    Val::Vector(elements) => val = &mut elements[*i],
                     _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
                 }
             }
         }
     }
+    val
+}
+
+pub fn apply_accessor_val<'a, B: BV>(
+    shared_state: &'a SharedState<B>,
+    mut val: &'a Val<B>,
+    accessor: &[GVAccessor<String>],
+) -> &'a Val<B> {
+    for acc in accessor {
+        match acc {
+            GVAccessor::Field(s) => {
+                let name =
+                    shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
+                match val {
+                    Val::Struct(field_vals) => val = field_vals.get(&name).unwrap(),
+                    _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
+                }
+            }
+            GVAccessor::Element(i) => {
+                match val {
+                    Val::Vector(elements) => val = &elements[*i],
+                    _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+                }
+            }
+        }
+    }
+    val
+}
+
+// Replace the given subfield of a value with a symbolic variable (if
+// it isn't already), and return the variable.  Used in register
+// initialisation, below.
+fn setup_val<'a, B: BV>(
+    shared_state: &'a SharedState<B>,
+    val: &mut Val<B>,
+    ty: &'a Ty<Name>,
+    accessor: Vec<GVAccessor<String>>,
+    solver: &mut Solver<B>,
+) -> Sym {
+    let val = apply_accessor_val_mut(shared_state, val, &accessor);
+    let ty  = apply_accessor_type(shared_state, ty, &accessor);
     match ty {
         Ty::Bits(len) => {
             let var = solver.fresh();
             solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(*len)));
+            *val = Val::Symbolic(var);
+            var
+        }
+        Ty::Struct(struct_name) => {
+            let field_types = shared_state.structs.get(struct_name).unwrap();
+            let mut fields = HashMap::default();
+            for (field_name, ty) in field_types {
+                let mut v = Val::Unit;
+                setup_val(shared_state, &mut v, ty, vec![], solver);
+                fields.insert(*field_name, v);
+            }
+            *val = Val::Struct(fields);
+            solver.fresh() // TODO: return value instead
+        }
+        Ty::Bool => {
+            let var = solver.fresh();
+            solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::Bool));
             *val = Val::Symbolic(var);
             var
         }
@@ -426,7 +508,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
     target: &T,
-) -> (Frame<'ir, B>, Checkpoint<B>) {
+) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<String, Sym>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
@@ -444,18 +526,33 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
             .unwrap_or_else(|| panic!("No value for register {} during setup", reg))
             .clone();
         let ty = register_types.get(&ex_var).unwrap();
-        let var = setup_val(shared_state, &mut ex_val, &ty, accessor, &mut solver);
+        let var =
+            if let Some((var,val)) = target.special_reg_init(&reg, &accessor, ty, shared_state, &mut local_frame, &ctx, &mut solver) {
+                ex_val = val;
+                var
+            } else {
+                setup_val(shared_state, &mut ex_val, &ty, accessor, &mut solver)
+            };
         local_frame.regs_mut().assign(ex_var, ex_val, shared_state);
         reg_vars.insert(reg, var);
     }
 
-    let pc_id = shared_state.symtab.lookup(T::pc_reg());
+    let (pc_str, pc_acc) = target.pc_reg();
+    let pc_id = shared_state.symtab.lookup(&pc_str);
+    let mut pc_full = local_frame.regs().get_last_if_initialized(pc_id).unwrap().clone();
     let pc_type = register_types.get(&pc_id).unwrap();
-    let pc = match pc_type {
-        Ty::Bits(n) => Val::Bits(B::new(init_pc, *n)),
+    let pc_addr = apply_accessor_val_mut(shared_state, &mut pc_full, &pc_acc);
+    let pc_type = apply_accessor_type(shared_state, &pc_type, &pc_acc);
+    match pc_type {
+        Ty::Bits(n) => {
+            use smtlib::{Def, Exp};
+            solver.add(Def::Assert(Exp::Eq(
+                Box::new(smt_value(pc_addr).unwrap()),
+                Box::new(Exp::Bits64(B64::new(init_pc, *n))))))
+        }
         _ => panic!("Bad type for PC: {:?}", pc_type),
     };
-    local_frame.regs_mut().assign(pc_id, pc, shared_state);
+    local_frame.regs_mut().assign(pc_id, pc_full, shared_state);
 
     let memory = solver.fresh();
     let tag_memory_var = solver.fresh();
@@ -469,7 +566,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
         smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(1))),
     ));
 
-    target.init(shared_state, &mut local_frame, &mut solver, init_pc, reg_vars);
+    target.init(shared_state, &mut local_frame, &mut solver, init_pc, &reg_vars);
 
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
         Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var });
@@ -478,7 +575,57 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
 
     executor::reset_registers(0, &mut local_frame, &executor::TaskState::new(), shared_state, &mut solver, SourceLoc::unknown()).unwrap_or_else(|e| panic!("Unable to apply reset-time registers: {}", e));
 
-    (freeze_frame(&local_frame), smt::checkpoint(&mut solver))
+    (freeze_frame(&local_frame), smt::checkpoint(&mut solver), reg_vars)
+}
+
+pub fn run_function_solver<'ctx, 'ir, B: BV>(
+    shared_state: &SharedState<'ir, B>,
+    frame: &mut LocalFrame<'ir, B>,
+    ctx: &'ctx smt::Context,
+    solver: &mut Solver<'ctx, B>,
+    function_name: &'ir str,
+    args: Vec<Val<B>>,
+) -> Val<B> {
+    let c = smt::checkpoint(solver);
+    let (v, ff, cc) = run_function(shared_state, frame, c, function_name, args);
+    *frame = ff;
+    *solver = Solver::from_checkpoint(ctx, cc);
+    v
+}
+
+pub fn run_function<'ir, B: BV>(
+    shared_state: &SharedState<'ir, B>,
+    frame: &mut LocalFrame<'ir, B>,
+    checkpoint: Checkpoint<B>,
+    function_name: &'ir str,
+    args: Vec<Val<B>>,
+) -> (Val<B>, LocalFrame<'ir, B>, Checkpoint<B>) {
+    let fn_id = shared_state.symtab.lookup(&zencode::encode(function_name));
+    let (arg_tys, ret_ty, instrs) = shared_state.functions.get(&fn_id)
+        .unwrap_or_else(|| panic!("Function \"{}\" not found", function_name));
+    let results = SegQueue::new();
+    let task_state = TaskState::new();
+    let task = frame
+        .new_call(fn_id, arg_tys, ret_ty, Some(&args), instrs)
+        .task_with_checkpoint(1, &task_state, checkpoint);
+
+    executor::start_single(
+        task,
+        &shared_state,
+        &results,
+        &move |_tid, _task_id, result, _shared_state, mut solver, results| match result {
+            Ok((val, frame)) => {
+                results.push((val, frame, smt::checkpoint(&mut solver)));
+            }
+            Err(err) => eprintln!("Helper function {} failed: {:?}", function_name, err),
+        },
+    );
+    if results.len() != 1 {
+        panic!("Expected execution of helper function {} to have one path, found {}", function_name, results.len());
+    }
+    let (val, frame, post_init_checkpoint) = results.pop().expect("pop failed");
+
+    (val, frame, post_init_checkpoint)
 }
 
 pub fn init_model<'ir, B: BV>(
@@ -523,7 +670,7 @@ pub fn init_model<'ir, B: BV>(
 }
 
 pub fn setup_opcode<'ir, B: BV, T: Target>(
-    _target: &T,
+    target: &T,
     shared_state: &SharedState<'ir, B>,
     frame: &Frame<'ir, B>,
     opcode: B,
@@ -538,8 +685,10 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
 
     let local_frame = executor::unfreeze_frame(frame);
 
-    let pc_id = shared_state.symtab.lookup(T::pc_reg());
+    let (pc_name, pc_acc) = target.pc_reg();
+    let pc_id = shared_state.symtab.lookup(&pc_name);
     let pc = local_frame.regs().get_last_if_initialized(pc_id).unwrap();
+    let pc = apply_accessor_val(shared_state, &pc, &pc_acc);
     // This will add a fake read event, but that shouldn't matter
     /*let read_kind_name = shared_state.symtab.get("zRead_ifetch").expect("Read_ifetch missing");
     let (read_kind_pos, read_kind_size) = shared_state.enum_members.get(&read_kind_name).unwrap();
@@ -754,7 +903,7 @@ pub fn finalize<'ir, B: BV, T: Target>(
 
     // Add branch instruction at the end of the sequence
     let opcode: B = target.final_instruction(*exit_register);
-    let (_, new_checkpoint) = setup_opcode(target, shared_state, frame, opcode, None, checkpoint);
+    let (_, new_checkpoint) = setup_opcode(target, shared_state, &frame, opcode, None, checkpoint);
 
     (*entry_register, *exit_register, new_checkpoint)
 }
