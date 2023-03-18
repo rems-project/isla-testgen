@@ -19,6 +19,11 @@ acknowledgements.  In addition, Arm provided valuable cooperation
 during the development of this software and the testing of the Morello
 specifications.
 
+*NB*: the master branch is currently rather unstable, the
+`morello-public` tag matches the instructions below.  The HEAD will
+require more recent versions of the dependencies, and is likely to be
+much buggier.
+
 ## Building and generating tests
 
 Several pieces of software are required to build the test generator, a
