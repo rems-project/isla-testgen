@@ -150,7 +150,10 @@ impl<'a, B:BV> Instr<'a, B> {
 
 // TODO: should also filter on the mode
 fn undefined_or_unsupported<'a, B: BV>(instr: &Instr<'a, B>) -> bool {
-    if instr.opcode_remainder.iter().any(|i| matches!(i, Sexp::Item(":FEAT"))) {
+    // Avoid segment stuff for now
+    if instr.name == "far JMP" {
+        true
+    } else if instr.opcode_remainder.iter().any(|i| matches!(i, Sexp::Item(":FEAT"))) {
         true
     } else {
         match instr.opcode_remainder {
