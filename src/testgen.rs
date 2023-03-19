@@ -427,7 +427,7 @@ struct TestConf<'ir, B: BV> {
     generate_testfile: bool,
     sparse: bool,
     init_pc: u64,
-    register_map: HashMap<String, Sym>,
+    register_map: HashMap<(String, Vec<extract_state::GVAccessor<String>>), Sym>,
 }
 
 #[derive(Debug)]

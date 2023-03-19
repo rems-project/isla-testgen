@@ -146,6 +146,16 @@ fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<G
     parts.join(".")
 }
 
+fn regacc_str_to_str(regacc: &(String, Vec<GVAccessor<String>>)) -> String {
+    let (reg, acc) = regacc;
+    let fields = acc.iter().map(|acc| match acc {
+        GVAccessor::Field(a) => zencode::decode(a),
+        GVAccessor::Element(i) => i.to_string(),
+    });
+    let parts: Vec<String> = iter::once(reg.clone()).chain(fields).collect();
+    parts.join(".")
+}
+
 impl fmt::Display for GVAccessor<&str> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -337,7 +347,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     symbolic_regions: &[Range<memory::Address>],
     symbolic_code_regions: &[Range<memory::Address>],
     sparse: bool,
-    initial_register_map: &HashMap<String, Sym>,
+    initial_register_map: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
@@ -396,39 +406,26 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     // Ensure that system registers that are essential for the harness are included even
     // if they don't appear in the event trace.
-    let initial_local_frame = isla_lib::executor::unfreeze_frame(initial_frame);
-//    let initial_frame_registers = initial_local_frame.regs();
-    for (reg, acc) in target.essential_regs() {
-        assert!(acc.is_empty()); // TODO
-        if let Some(name) = shared_state.symtab.get(&zencode::encode(&reg)) {
-            if let Some(sym) = initial_register_map.get(&zencode::encode(&reg)) {
-//            if let Some(val) = initial_frame_registers.get_last_if_initialized(name) {
+    let mut missing: HashSet<(String, Vec<GVAccessor<String>>)> = target.essential_regs().drain(..).collect();
+
+    for regacc in target.regs() {
+        if let Some(name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
+            if let Some(sym) = initial_register_map.get(&regacc) {
                 if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym))? {
-                    initial_registers.insert((name, vec![]), ground_val);
-                } else {
-                    return Err(ExecError::Unreachable(format!("Essential system register {} does not have a value", reg)));
+                    missing.remove(&regacc);
+                    initial_registers.insert(regacc_int(shared_state, &regacc), ground_val);
                 }
             } else {
-                return Err(ExecError::Unreachable(format!("Essential system register {} does not have a value", reg)));
+                    return Err(ExecError::Unreachable(format!("Register {:?} was not initialised", regacc)));
             }
         } else {
-            panic!("Missing initial system register: {}", reg);
+            panic!("Missing initial system register: {}", regacc.0);
         }
     }
-    for (reg, acc) in target.regs() {
-        if acc.is_empty() {
-            if let Some(name) = shared_state.symtab.get(&zencode::encode(&reg)) {
-                if let Some(sym) = initial_register_map.get(&reg) {
-                    if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym))? {
-                        initial_registers.insert((name, vec![]), ground_val);
-                    }
-                } else {
-                    return Err(ExecError::Unreachable(format!("Register {} was not initialised", reg)));
-                }
-            } else {
-                panic!("Missing initial system register: {}", reg);
-            }
-        }
+    if !missing.is_empty() {
+        let missing: Vec<_> = missing.iter().map(|ra| regacc_str_to_str(ra)).collect();
+        return Err(ExecError::Unreachable(format!("Essential system register(s) missing: {}",
+                                                  missing.join(", "))));
     }
     for (regacc, val) in final_register_vals {
         // TODO: the bool isn't right...

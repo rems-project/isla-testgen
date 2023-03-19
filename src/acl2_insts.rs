@@ -150,12 +150,16 @@ impl<'a, B:BV> Instr<'a, B> {
 
 // TODO: should also filter on the mode
 fn undefined_or_unsupported<'a, B: BV>(instr: &Instr<'a, B>) -> bool {
-    match instr.opcode_remainder {
-        [Sexp::Item(":MODE"), Sexp::Item(":I64"), ..] => true,
-        _ => match instr.implementation {
-            Sexp::Item("NIL") => true,
-            Sexp::Seq(items) => matches!(items[..], [Sexp::Item("X86-ILLEGAL-INSTRUCTION" | ":NO-INSTRUCTION"), ..]),
-            _ => false,
+    if instr.opcode_remainder.iter().any(|i| matches!(i, Sexp::Item(":FEAT"))) {
+        true
+    } else {
+        match instr.opcode_remainder {
+            [Sexp::Item(":MODE"), Sexp::Item(":I64"), ..] => true,
+            _ => match instr.implementation {
+                Sexp::Item("NIL") => true,
+                Sexp::Seq(items) => matches!(items[..], [Sexp::Item("X86-ILLEGAL-INSTRUCTION" | ":NO-INSTRUCTION"), ..]),
+                _ => false,
+            }
         }
     }
 }

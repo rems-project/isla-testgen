@@ -46,6 +46,7 @@ use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions, TaskSt
 use isla_lib::ir::*;
 use isla_lib::source_loc::SourceLoc;
 use isla_lib::memory::{Memory, SmtKind};
+use isla_lib::primop_util::smt_sbits;
 use isla_lib::register::RegisterBindings;
 use isla_lib::simplify::write_events;
 use isla_lib::smt;
@@ -468,28 +469,17 @@ fn setup_val<'a, B: BV>(
     shared_state: &'a SharedState<B>,
     val: &mut Val<B>,
     ty: &'a Ty<Name>,
-    accessor: Vec<GVAccessor<String>>,
+    accessor: &Vec<GVAccessor<String>>,
     solver: &mut Solver<B>,
 ) -> Sym {
-    let val = apply_accessor_val_mut(shared_state, val, &accessor);
-    let ty  = apply_accessor_type(shared_state, ty, &accessor);
+    let val = apply_accessor_val_mut(shared_state, val, accessor);
+    let ty  = apply_accessor_type(shared_state, ty, accessor);
     match ty {
         Ty::Bits(len) => {
             let var = solver.fresh();
             solver.add(smtlib::Def::DeclareConst(var, smtlib::Ty::BitVec(*len)));
             *val = Val::Symbolic(var);
             var
-        }
-        Ty::Struct(struct_name) => {
-            let field_types = shared_state.structs.get(struct_name).unwrap();
-            let mut fields = HashMap::default();
-            for (field_name, ty) in field_types {
-                let mut v = Val::Unit;
-                setup_val(shared_state, &mut v, ty, vec![], solver);
-                fields.insert(*field_name, v);
-            }
-            *val = Val::Struct(fields);
-            solver.fresh() // TODO: return value instead
         }
         Ty::Bool => {
             let var = solver.fresh();
@@ -508,7 +498,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
     target: &T,
-) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<String, Sym>) {
+) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<(String, Vec<GVAccessor<String>>), Sym>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
@@ -531,10 +521,10 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
                 ex_val = val;
                 var
             } else {
-                setup_val(shared_state, &mut ex_val, &ty, accessor, &mut solver)
+                setup_val(shared_state, &mut ex_val, &ty, &accessor, &mut solver)
             };
         local_frame.regs_mut().assign(ex_var, ex_val, shared_state);
-        reg_vars.insert(reg, var);
+        reg_vars.insert((reg, accessor), var);
     }
 
     let (pc_str, pc_acc) = target.pc_reg();
@@ -714,7 +704,7 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
     } else {
         solver.add(Def::Assert(Exp::Eq(
             Box::new(Exp::Var(opcode_var)),
-            Box::new(bits64(opcode.try_into().unwrap(), opcode.len())),
+            Box::new(smt_sbits(opcode)),
         )));
     }
     let read_exp = smt_value(&read_val).unwrap();
@@ -766,25 +756,32 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
         vec![task],
         &shared_state,
         queue.clone(),
-        &move |tid, task_id, result, shared_state, solver, collected| {
+        &move |tid, task_id, result, shared_state, mut solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             match result {
-                Ok((val, frame)) => {
+                Ok((val, mut frame)) => {
+                    target.post_instruction(shared_state, &mut frame, &mut solver);
+                    let check = solver.check_sat();
                     let events = events_of(&solver, dump_events);
-                    if let Some((ex_val, ex_loc)) = frame.get_exception() {
-                        let s = ex_val.to_string(&shared_state.symtab);
-                        collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
-                    } else {
-                        match val {
-                            Val::Unit => collected
-                                .push((postprocess(target, tid, task_id, frame, shared_state, solver, &events), events)),
-                            _ =>
-                            // Anything else is an error!
-                            {
-                                log_from!(tid, log::VERBOSE, format!("Unexpected footprint return value: {:?}", val));
-                                collected.push((Err(format!("Unexpected footprint return value: {:?}", val)), events))
+                    if matches!(check, SmtResult::Sat) {
+                        if let Some((ex_val, ex_loc)) = frame.get_exception() {
+                            let s = ex_val.to_string(&shared_state.symtab);
+                            collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
+                        } else {
+                            match val {
+                                Val::Unit => collected
+                                    .push((postprocess(target, tid, task_id, frame, shared_state, solver, &events), events)),
+                                _ =>
+                                // Anything else is an error!
+                                {
+                                    log_from!(tid, log::VERBOSE, format!("Unexpected footprint return value: {:?}", val));
+                                    collected.push((Err(format!("Unexpected footprint return value: {:?}", val)), events))
+                                }
                             }
                         }
+                    } else {
+                        log_from!(tid, log::VERBOSE, format!("Post-instruction check failed with {:?}", check));
+                        collected.push((Err(format!("Post-instruction check failed with {:?}", check)), events))
                     }
                 }
                 Err((ExecError::Dead, _)) => {

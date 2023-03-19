@@ -89,7 +89,13 @@ where
         frame: &mut LocalFrame<'ir, B>,
         solver: &mut Solver<B>,
         init_pc: u64,
-        regs: &HashMap<String, Sym>,
+        regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
+    );
+    fn post_instruction<'ir, B: BV>(
+        &self,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        solver: &mut Solver<B>,
     );
     fn translation_table_info(&self) -> Option<TranslationTableInfo>;
     fn pc_alignment_pow() -> u32;
@@ -163,9 +169,15 @@ impl Target for Aarch64 {
         _frame: &mut LocalFrame<B>,
         _solver: &mut Solver<B>,
         _init_pc: u64,
-        _regs: &HashMap<String, Sym>,
+        _regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
     ) {
     }
+    fn post_instruction<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _solver: &mut Solver<B>,
+    ) {}
     fn translation_table_info(&self) -> Option<TranslationTableInfo> {
         None
     }
@@ -362,7 +374,7 @@ impl Target for Morello {
         local_frame: &mut LocalFrame<'ir, B>,
         solver: &mut Solver<B>,
         init_pc: u64,
-        regs: &HashMap<String, Sym>,
+        regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
     ) {
         use isla_lib::ir::*;
         match local_frame.lets().get(&shared_state.symtab.lookup("z__a64_version")) {
@@ -417,7 +429,7 @@ impl Target for Morello {
             };
             local_frame.regs_mut().assign(pcc_id, pcc, shared_state);
         }
-        for (reg, v) in regs {
+        for ((reg, _acc), v) in regs {
             use isla_lib::smt::smtlib::*;
             if self.aarch64_compatible() && reg.starts_with("_R") {
                 solver.add(Def::Assert(Exp::Eq(
@@ -524,6 +536,12 @@ impl Target for Morello {
             }
         }
     }
+    fn post_instruction<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _solver: &mut Solver<B>,
+    ) {}
     fn exception_stop_functions() -> Vec<String> {
         vec!["AArch64_TakeException".to_string()]
     }
@@ -718,7 +736,13 @@ impl Target for X86 {
         _frame: &mut LocalFrame<'ir, B>,
         _solver: &mut Solver<B>,
         _init_pc: u64,
-        _regs: &HashMap<String, Sym>,
+        _regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
+    ) { }
+    fn post_instruction<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _solver: &mut Solver<B>,
     ) { }
     fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
     fn pc_alignment_pow() -> u32 { 0 }
