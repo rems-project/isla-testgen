@@ -8,7 +8,17 @@ let lookup map r =
   | None -> r
   | Some r' -> r'
 
-let map =
-  map_from_list
-    (("rflags.bits", "eflags")::
-       (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i)))
+let get_map s =
+  match s with
+  | "" -> StringMap.empty
+  | "x86" ->
+     map_from_list
+       (("rflags.bits", "eflags")::
+          (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i)))
+  | "x86-sail" ->
+     map_from_list
+       (("rflags.bits", "rflags")::
+          (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i)))
+  | _ ->
+     Printf.eprintf "Unknown register map: %s" s;
+     exit 1

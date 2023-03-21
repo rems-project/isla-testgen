@@ -11,6 +11,7 @@ let gdb_verbose = ref false
 let wait_for_breakpoint = ref false
 let end_action = ref NoAction
 let setup_only = ref false
+let regmap = ref ""
 
 let options = [
     ("--single-step", Arg.Unit (fun _ -> run_type := Runner.SingleStep None), "Run in single step mode");
@@ -22,6 +23,7 @@ let options = [
     ("--detach", Arg.Unit (fun _ -> end_action := Detach), "Send a detach request at the end of the test");
     ("--kill", Arg.Unit (fun _ -> end_action := Kill), "Send a kill request at the end of the test");
     ("--setup-only", Arg.Set setup_only, "Only run the setup");
+    ("--reg-map", Arg.Set_string regmap, "Use named register map");
   ]
 let anon_arg s =
   match !test_file with
@@ -38,14 +40,18 @@ let test_file =
      exit 1
   | Some s -> s
 
+let regmap = Regmap.get_map !regmap;;
 let script = Parser.read_test test_file
 let con = Gdb.connect !gdb_verbose;;
 let regs = Readregs.read_regs con;;
 if !wait_for_breakpoint then ignore (Gdb.continue con None);;
-if !setup_only
-then Runner.setup !verbose con regs script
-else Runner.run_test !verbose !run_type con regs script;;
+let result =
+  if !setup_only
+  then (Runner.setup !verbose regmap con regs script; 0)
+  else Runner.run_test !verbose !run_type regmap con regs script;;
 match !end_action with
 | NoAction -> ()
 | Kill -> ignore (Gdb.kill con)
 | Detach -> ignore (Gdb.detach con)
+;;
+exit result

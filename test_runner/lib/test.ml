@@ -1,10 +1,22 @@
 open Gdb
 open Readregs
 
+(*
+
+dune top
+<copy into ocaml toplevel>
+
+open Test_runner;;
+module T = (val Test.make ());;
+open T;;
+
+ *)
+
 module type TEST = sig
   val con : connection
   val simple_command : string -> Bytes.t
   val regs : (string * int) list
+  val read_reg : string -> int * string
 end
 
 let make () : (module TEST) =
@@ -22,4 +34,7 @@ let make () : (module TEST) =
      let con = con
      let simple_command = simple_command
      let regs = read_regs con
+     let read_reg r =
+       let sz,v = Gdb.read_register con (List.assoc r regs) in
+       sz, Z.format "%x" v
    end)

@@ -13,8 +13,7 @@ let bytes_of_z size z =
   Bytes.init size (fun i ->
       Char.chr (Z.to_int (Z.extract z (8*i) 8)))
 
-let setup verbose con regs test =
-  let regmap = Regmap.map in
+let setup verbose regmap con regs test =
   let set = function
     | Register r ->
        let reg_number =
@@ -32,9 +31,8 @@ let setup verbose con regs test =
   in
   List.iter set test.prestate
 
-let run_test verbose run_type con regs test =
-  let regmap = Regmap.map in
-  setup verbose con regs test;
+let run_test verbose run_type regmap con regs test =
+  setup verbose regmap con regs test;
   let execute () =
     match run_type with
     | Breakpoint bp_type -> begin
@@ -83,8 +81,9 @@ let run_test verbose run_type con regs test =
        else Some (Printf.sprintf "Memory mismatch at %s: received %s, expected %s in %d bits" (Z.format "#x" m.address) (Z.format "#x" v) (Z.format "#x" m.value) m.size)
   in
   match List.filter_map check test.poststate with
-  | [] -> print_endline "OK"
+  | [] -> (print_endline "OK"; 0)
   | fails ->
      print_endline "FAIL";
-     List.iter print_endline fails
+     List.iter print_endline fails;
+     1
 
