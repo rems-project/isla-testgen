@@ -468,20 +468,25 @@ fn generate_test<'ir, B: BV, T: Target>(
                 Some(m) => format!("{:#010x}", m),
             };
             println!("opcode: {}  mask: {}", opcode, mask_str);
-            let (opcode_var, op_checkpoint) =
+            let (opcode_var, op_checkpoint, opcode_ok) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
-            let mut continuations = run_model_instruction(
-                target,
-                &run_instruction_function,
-                conf.num_threads,
-                conf.shared_state,
-                &frame,
-                op_checkpoint,
-                opcode_var,
-                stop_conds,
-                conf.dump_all_events,
-                &conf.assertion_reports,
-            );
+            let mut continuations =
+                if opcode_ok {
+                    run_model_instruction(
+                        target,
+                        &run_instruction_function,
+                        conf.num_threads,
+                        conf.shared_state,
+                        &frame,
+                        op_checkpoint,
+                        opcode_var,
+                        stop_conds,
+                        conf.dump_all_events,
+                        &conf.assertion_reports,
+                    )
+                } else {
+                    vec![]
+                };
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
@@ -576,20 +581,25 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 Some(m) => format!("{:#010x}", m),
             };
             println!("opcode: {}  mask: {}", opcode, mask_str);
-            let (opcode_var, op_checkpoint) =
+            let (opcode_var, op_checkpoint, opcode_ok) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
-            let mut continuations = run_model_instruction(
-                target,
-                &run_instruction_function,
-                conf.num_threads,
-                conf.shared_state,
-                &frame,
-                op_checkpoint,
-                opcode_var,
-                stop_conds,
-                conf.dump_all_events,
-                &conf.assertion_reports,
-            );
+            let mut continuations =
+                if opcode_ok {
+                    run_model_instruction(
+                        target,
+                        &run_instruction_function,
+                        conf.num_threads,
+                        conf.shared_state,
+                        &frame,
+                        op_checkpoint,
+                        opcode_var,
+                        stop_conds,
+                        conf.dump_all_events,
+                        &conf.assertion_reports,
+                    )
+                } else {
+                    vec![]
+                };
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
@@ -626,20 +636,25 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 Some(m) => format!("{:#010x}", m),
             };
             println!("opcode: {}  mask: {}", opcode, mask_str);
-            let (opcode_var, op_checkpoint) =
+            let (opcode_var, op_checkpoint, opcode_ok) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, core_opcode_mask, checkpoint.clone());
-            let continuations = run_model_instruction(
-                target,
-                &run_instruction_function,
-                conf.num_threads,
-                conf.shared_state,
-                &frame,
-                op_checkpoint,
-                opcode_var,
-                stop_conds,
-                conf.dump_all_events,
-                &conf.assertion_reports,
-            );
+            let continuations =
+                if opcode_ok {
+                    run_model_instruction(
+                        target,
+                        &run_instruction_function,
+                        conf.num_threads,
+                        conf.shared_state,
+                        &frame,
+                        op_checkpoint,
+                        opcode_var,
+                        stop_conds,
+                        conf.dump_all_events,
+                        &conf.assertion_reports,
+                    )
+                } else {
+                    vec![]
+                };
             let num_continuations = continuations.len();
             if num_continuations > 0 {
                 println!("{} successful execution(s)", num_continuations);
@@ -683,20 +698,25 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                     Some(m) => format!("{:#010x}", m),
                 };
                 println!("opcode: {}  mask: {}", opcode, mask_str);
-                let (opcode_var, op_checkpoint) =
+                let (opcode_var, op_checkpoint, opcode_ok) =
                     setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
-                let mut continuations = run_model_instruction(
-                    target,
-                    &run_instruction_function,
-                    conf.num_threads,
-                    conf.shared_state,
-                    &frame,
-                    op_checkpoint,
-                    opcode_var,
-                    stop_conds,
-                    conf.dump_all_events,
-                    &conf.assertion_reports,
-                );
+                let mut continuations =
+                    if opcode_ok {
+                        run_model_instruction(
+                            target,
+                            &run_instruction_function,
+                            conf.num_threads,
+                            conf.shared_state,
+                            &frame,
+                            op_checkpoint,
+                            opcode_var,
+                            stop_conds,
+                            conf.dump_all_events,
+                            &conf.assertion_reports,
+                        )
+                    } else {
+                        vec![]
+                    };
                 let num_continuations = continuations.len();
                 if num_continuations > 0 {
                     let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
