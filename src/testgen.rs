@@ -457,18 +457,19 @@ fn generate_test<'ir, B: BV, T: Target>(
     let mut opcode_index = 0;
     let mut rng = rand::thread_rng();
     let mut instr_map: HashMap<B, String> = HashMap::new();
+    let mut pc_vals: Vec<(Val<B>, String)> = vec![];
     for (i, (instruction, opcode_mask)) in conf.instructions.iter().enumerate() {
         let mut random_attempts_left = conf.max_retries;
         let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
         loop {
             let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
-            instr_map.insert(opcode, description);
+            instr_map.insert(opcode, description.clone());
             let mask_str = match opcode_mask {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
             println!("opcode: {}  mask: {}", opcode, mask_str);
-            let (opcode_var, op_checkpoint, opcode_ok) =
+            let (opcode_pc, opcode_var, op_checkpoint, opcode_ok) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations =
                 if opcode_ok {
@@ -492,6 +493,7 @@ fn generate_test<'ir, B: BV, T: Target>(
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
                 println!("{} successful execution(s)", num_continuations);
                 opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                pc_vals.push((opcode_pc, description));
                 opcode_index += 1;
                 frame = f;
                 checkpoint = c;
@@ -535,6 +537,7 @@ fn generate_test<'ir, B: BV, T: Target>(
         conf.symbolic_code_regions,
         conf.sparse,
         &conf.register_map,
+        &pc_vals,
     )?;
     if conf.generate_testfile {
         generate_testfile::make_testfile(target, basename, &instr_map, initial_state, conf.init_pc, opcode_index)?;
@@ -564,6 +567,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
     let mut opcode_index = 0;
     let mut rng = rand::thread_rng();
     let mut instr_map: HashMap<B, String> = HashMap::new();
+    let mut pc_vals: Vec<(Val<B>, String)> = vec![];
 
     let mut prefix: Vec<(String, Option<u32>)> = conf.instructions.iter().map(|(s,m)| (s.to_string(), *m)).collect();
     let suffix = prefix.split_off(core_instruction_index + 1);
@@ -575,13 +579,13 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
         let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
         loop {
             let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
-            instr_map.insert(opcode, description);
+            instr_map.insert(opcode, description.clone());
             let mask_str = match opcode_mask {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
             println!("opcode: {}  mask: {}", opcode, mask_str);
-            let (opcode_var, op_checkpoint, opcode_ok) =
+            let (opcode_pc, opcode_var, op_checkpoint, opcode_ok) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
             let mut continuations =
                 if opcode_ok {
@@ -605,6 +609,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
                 println!("{} successful execution(s)", num_continuations);
                 opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                pc_vals.push((opcode_pc, description));
                 opcode_index += 1;
                 frame = f;
                 checkpoint = c;
@@ -630,13 +635,13 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
         let stop_conds = if conf.exceptions_allowed_at.contains(&i) { conf.stop_conditions } else { &all_stop_conditions };
         loop {
             let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, &core_instruction, register_bias);
-            instr_map.insert(opcode, description);
+            instr_map.insert(opcode, description.clone());
             let mask_str = match core_opcode_mask {
                 None => "none".to_string(),
                 Some(m) => format!("{:#010x}", m),
             };
             println!("opcode: {}  mask: {}", opcode, mask_str);
-            let (opcode_var, op_checkpoint, opcode_ok) =
+            let (opcode_pc, opcode_var, op_checkpoint, opcode_ok) =
                 setup_opcode(target, conf.shared_state, &frame, opcode, core_opcode_mask, checkpoint.clone());
             let continuations =
                 if opcode_ok {
@@ -659,6 +664,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
             if num_continuations > 0 {
                 println!("{} successful execution(s)", num_continuations);
                 opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                pc_vals.push((opcode_pc, description));
                 opcode_index += 1;
                 break continuations;
             } else {
@@ -692,13 +698,13 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 let (opcode, repeat, description) = instruction_opcode(conf.little_endian, conf.encodings, conf.isa_config, instruction, register_bias);
                 *instruction = format!("{:#x} {}", opcode.lower_u64(), description);
                 worth_repeating = worth_repeating || repeat;
-                instr_map.insert(opcode, description);
+                instr_map.insert(opcode, description.clone());
                 let mask_str = match opcode_mask {
                     None => "none".to_string(),
                     Some(m) => format!("{:#010x}", m),
                 };
                 println!("opcode: {}  mask: {}", opcode, mask_str);
-                let (opcode_var, op_checkpoint, opcode_ok) =
+                let (opcode_pc, opcode_var, op_checkpoint, opcode_ok) =
                     setup_opcode(target, conf.shared_state, &frame, opcode, *opcode_mask, checkpoint.clone());
                 let mut continuations =
                     if opcode_ok {
@@ -722,6 +728,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                     let (f, c) = continuations.remove(rng.gen_range(0, num_continuations));
                     println!("{} successful execution(s)", num_continuations);
                     opcode_vars.push((format!("opcode {}", opcode_index), RegSource::Symbolic(opcode_var)));
+                    pc_vals.push((opcode_pc, description));
                     opcode_index += 1;
                     frame = f;
                     checkpoint = c;
@@ -756,6 +763,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 conf.symbolic_code_regions,
                 conf.sparse,
                 &conf.register_map,
+                &pc_vals,
             ) {
                 Ok(initial_state) => {
                     had_success = true;

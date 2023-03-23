@@ -133,6 +133,7 @@ pub struct PrePostStates<'ir, B> {
     pub post_memory: Vec<(Range<memory::Address>, Vec<u8>)>,
     pub post_tag_memory: Vec<(memory::Address, bool)>,
     pub post_registers: HashMap<(&'ir str, Vec<GVAccessor<&'ir str>>), GroundVal<B>>,
+    pub instruction_locations: HashMap<memory::Address, String>,
 }
 
 fn regacc_to_str<B: BV>(shared_state: &ir::SharedState<B>, regacc: &(Name, Vec<GVAccessor<Name>>)) -> String {
@@ -348,6 +349,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     symbolic_code_regions: &[Range<memory::Address>],
     sparse: bool,
     initial_register_map: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
+    instruction_pc_vals: &[(Val<B>, String)],
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
@@ -387,6 +389,17 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     let mut model = Model::new(&solver);
     log!(log::VERBOSE, format!("Model: {:?}", model));
+
+    let mut instruction_locations = HashMap::new();
+    for (pc_val, description) in instruction_pc_vals {
+        match get_model_val(&mut model, pc_val)? {
+            Some(GroundVal::Bits(bs)) => {
+                instruction_locations.insert(bs.lower_u64(), description.clone());
+            },
+            Some(GroundVal::Bool(_)) => panic!("Instruction {} is located at a bool? ({:?})", description, pc_val),
+            None => eprintln!("Instruction {} at {:?} doesn't have a concrete location", description, pc_val),
+        }
+    }
 
     let mut events = solver.trace().to_vec();
     let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
@@ -762,5 +775,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         post_registers,
         post_memory,
         post_tag_memory: final_symbolic_tag_memory,
+        instruction_locations,
     })
 }

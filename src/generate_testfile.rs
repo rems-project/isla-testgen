@@ -11,7 +11,7 @@ use std::io::Write;
 pub fn make_testfile<B: BV, T: Target>(
     target: &T,
     base_name: &str,
-    instr_map: &HashMap<B, String>,
+    _instr_map: &HashMap<B, String>,
     pre_post_states: PrePostStates<B>,
     init_pc: u64,
     steps: u64,
@@ -32,7 +32,7 @@ pub fn make_testfile<B: BV, T: Target>(
             let chunk_le: Vec<u8> = chunk.iter().cloned().rev().collect();
             let chunk_b = B::from_bytes(&chunk_le);
             write!(test_file, "mem {:#x} {} 0x{:x}", ptr, chunk_b.len(), chunk_b)?;
-            if let Some(description) = instr_map.get(&chunk_b) {
+            if let Some(description) = pre_post_states.instruction_locations.get(&ptr) {
                 writeln!(test_file, " // {}", description)?;
             } else {
                 writeln!(test_file)?;
@@ -58,12 +58,7 @@ pub fn make_testfile<B: BV, T: Target>(
                 } else {
                     ""
                 };
-            write!(test_file, "mem {:#x} {} 0x{:x}{}", ptr, chunk_b.len(), chunk_b, tag)?;
-            if let Some(description) = instr_map.get(&chunk_b) {
-                writeln!(test_file, " // {}", description)?;
-            } else {
-                writeln!(test_file)?;
-            }
+            writeln!(test_file, "mem {:#x} {} 0x{:x}{}", ptr, chunk_b.len(), chunk_b, tag)?;
             ptr += alignment as u64;
         }
     }

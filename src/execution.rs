@@ -668,7 +668,7 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
     opcode: B,
     opcode_mask: Option<u32>,
     prev_checkpoint: Checkpoint<B>,
-) -> (Sym, Checkpoint<B>, bool) {
+) -> (Val<B>, Sym, Checkpoint<B>, bool) {
     use isla_lib::smt::smtlib::{Def, Exp, Ty};
     use isla_lib::smt::*;
 
@@ -724,7 +724,7 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
         }
     };
 
-    (opcode_var, checkpoint(&mut solver), ok)
+    (pc.clone(), opcode_var, checkpoint(&mut solver), ok)
 }
 
 fn events_of<B: BV>(solver: &Solver<B>, active: bool) -> Vec<Event<B>> {
@@ -912,7 +912,7 @@ pub fn finalize<'ir, B: BV, T: Target>(
 
     // Add branch instruction at the end of the sequence
     let opcode: B = target.final_instruction(*exit_register);
-    let (_, new_checkpoint, _) = setup_opcode(target, shared_state, &frame, opcode, None, checkpoint);
+    let (_, _, new_checkpoint, _) = setup_opcode(target, shared_state, &frame, opcode, None, checkpoint);
 
     (*entry_register, *exit_register, new_checkpoint)
 }
