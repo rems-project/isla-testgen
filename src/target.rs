@@ -767,7 +767,12 @@ impl Target for X86 {
     ) -> Result<(), String> {
         Ok(())
     }
-    fn has_capabilities(&self) -> bool { false }
+    fn has_capabilities(&self) -> bool {
+        match self.style {
+            X86Style::Plain => false,
+            X86Style::Cap => true,
+        }
+    }
     fn run_in_el0(&self) -> bool { panic!("not implemented"); }
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
