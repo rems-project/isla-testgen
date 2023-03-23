@@ -85,6 +85,23 @@ let send_command con cmd =
   let _ = write con.fd (to_bytes cmd.buf) 0 (length cmd.buf) in
   ()
 
+let ok_or_error context response =
+  let response = Bytes.to_string response in
+  if String.length response = 3 && response.[0] = 'E'
+  then raise @@ CommandError response
+  else if response = "OK" then ()
+  else raise @@ ProtocolError ("Bad response to " ^ context ^ ": " ^ response)
+
+let bytes_to_hex bytes =
+  let size = Bytes.length bytes in
+  let hex = Bytes.make (2*size) '0' in
+  for i = 0 to size - 1 do
+    let byte = Printf.sprintf "%02x" (Bytes.get bytes i |> int_of_char) in
+    Bytes.set hex (2*i  ) byte.[0];
+    Bytes.set hex (2*i+1) byte.[1]
+  done;
+  hex
+
 let qxfer con object_name annex =
   let buf = Buffer.create 1024 in
   let rec continue offset =
@@ -107,6 +124,18 @@ let qxfer con object_name annex =
        raise @@ ProtocolError (Printf.sprintf "Unexpected response to %s: %s" cmd (Bytes.to_string response))
       
   in Buffer.contents (continue 0)
+
+(* Assumes we can do the whole write in one go - should be true for one cap *)
+let qxfer_set con object_name annex bytes =
+  let base_cmd = Printf.sprintf "qXfer:%s:write:%s:0:" object_name annex in
+  let command = start_command base_cmd in
+  let hex = bytes_to_hex bytes in
+  command_append_bytes command hex;
+  send_command con command;
+  let response = read_response con in
+  if Bytes.get response 0 == 'E'
+  then raise @@ CommandError (Printf.sprintf "Error in response to %s...: %s" base_cmd (Bytes.to_string response))
+  else () (* TODO: return bytes written; handle incomplete writes/large writes *)
 
 let check_bytes_or_error context response =
   if Bytes.length response = 3 && Bytes.get response 0 = 'E'
@@ -139,15 +168,11 @@ let hex_of_Z size value =
   done;
   hex
 
-let ok_or_error context response =
-  let response = Bytes.to_string response in
-  if String.length response = 3 && response.[0] = 'E'
-  then raise @@ CommandError response
-  else if response = "OK" then ()
-  else raise @@ ProtocolError ("Bad response to " ^ context ^ ": " ^ response)
+let bytes_for_bits size =
+  if size mod 8 == 0 then size / 8 else 1 + size / 8
 
 let write_register con i size value =
-  let hex_value = hex_of_Z size value in
+  let hex_value = hex_of_Z (bytes_for_bits size) value in
   let command = start_command (Printf.sprintf "P%x=" i) in
   command_append_bytes command hex_value;
   send_command con command;
@@ -169,16 +194,6 @@ let read_memory con addr length =
   let response = read_response con in
   check_bytes_or_error "reading memory" response;
   hex_to_bytes response
-
-let bytes_to_hex bytes =
-  let size = Bytes.length bytes in
-  let hex = Bytes.make (2*size) '0' in
-  for i = 0 to size - 1 do
-    let byte = Printf.sprintf "%02x" (Bytes.get bytes i |> int_of_char) in
-    Bytes.set hex (2*i  ) byte.[0];
-    Bytes.set hex (2*i+1) byte.[1]
-  done;
-  hex
 
 let write_memory con addr bytes =
   let size = Bytes.length bytes in

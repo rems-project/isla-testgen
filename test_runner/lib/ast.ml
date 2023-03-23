@@ -4,7 +4,8 @@
    made up of bytes. *)
 type requirement =
   | Register of { name: string; size: int; value: Z.t }
-  | Memory of { address: Z.t; size: int; value: Z.t }
+  | Memory of { address: Z.t; size: int; value: Z.t; tag: bool option }
+  | Tag of { address: Z.t; tag: bool }
 
 type run = {
     start: Z.t option;

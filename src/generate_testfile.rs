@@ -17,6 +17,14 @@ pub fn make_testfile<B: BV, T: Target>(
     steps: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut test_file = File::create(&format!("{}.test", base_name))?;
+
+    let mut pre_tag_mem: HashMap<u64, bool> = HashMap::new();
+    for (region, tags) in pre_post_states.pre_tag_memory.iter() {
+        for (i, tag) in tags.iter().enumerate() {
+            pre_tag_mem.insert(region.start + i as u64, *tag);
+        }
+    }
+
     let alignment = 1 << T::pc_alignment_pow();
     for (region, contents) in pre_post_states.code.iter() {
         let mut ptr = region.start;
@@ -33,13 +41,32 @@ pub fn make_testfile<B: BV, T: Target>(
         }
     }
 
+    // TODO: handle unaligned stuff properly
+    let alignment = 16;
     for (region, contents) in pre_post_states.pre_memory.iter() {
-        for (i, byte) in contents.iter().enumerate() {
-            writeln!(test_file, "mem {:#x} 8 {:#04x}", region.start + i as u64, byte)?;
+        let mut ptr = region.start;
+        for chunk in contents.chunks(alignment) {
+            let chunk_le: Vec<u8> = chunk.iter().cloned().rev().collect();
+            let chunk_b = B::from_bytes(&chunk_le);
+            let tag =
+                if target.has_capabilities() {
+                    match pre_tag_mem.get(&ptr) {
+                        Some(true) => " t",
+                        Some(false) => " f",
+                        None => "",
+                    }
+                } else {
+                    ""
+                };
+            write!(test_file, "mem {:#x} {} 0x{:x}{}", ptr, chunk_b.len(), chunk_b, tag)?;
+            if let Some(description) = instr_map.get(&chunk_b) {
+                writeln!(test_file, " // {}", description)?;
+            } else {
+                writeln!(test_file)?;
+            }
+            ptr += alignment as u64;
         }
     }
-
-    // TODO: CHERI tags
 
     let target_regs = target.regs();
 
@@ -85,7 +112,12 @@ pub fn make_testfile<B: BV, T: Target>(
         }
     }
 
-    // TODO: CHERI tags
+    if target.has_capabilities() {
+        for (ptr, tag) in pre_post_states.post_tag_memory {
+            let tag = if tag {"t"} else {"f"};
+            writeln!(test_file, "tag {:#x} {}", ptr, tag)?;
+        }
+    }
 
     // TODO: we can probably check more with gdb than the harnesses
     let post_regs = target.post_regs();

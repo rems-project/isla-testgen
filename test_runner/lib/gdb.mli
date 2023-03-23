@@ -15,12 +15,13 @@ val read_response : connection -> bytes
 val check_bytes_or_error : string -> bytes -> unit
 
 val qxfer : connection -> string -> string -> string
+val qxfer_set : connection -> string -> string -> bytes -> unit
 
-(** [read_register con i] will read register number [i], returning the size in bits *)
+(** [read_register con i] will read register number [i], returning the size in bytes (will be rounded up) *)
 val read_register : connection -> int -> int * Z.t
 
 (** [write_register con i size value] will attempt to write register [i]
-    with [value] of [size]. *)
+    with [value] of [size] bits. *)
 val write_register : connection -> int -> int -> Z.t -> unit
 
 val hex_to_Z : bytes -> int * Z.t

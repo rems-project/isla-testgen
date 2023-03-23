@@ -25,7 +25,7 @@ let read_test filename =
          reqs := Register {name; size; value} :: !reqs;
          read_req_aux ()
       | "reg"::_ -> failwith ("Bad register requirement, need 'name size value tag': " ^ line)
-      | ["mem"; address; size; value] ->
+      | "mem"::address::size::value::tl ->
          let address = match Z.of_string address with
            | v -> v
            | exception Invalid_argument _ -> failwith ("Bad address in register requirement: " ^ address)
@@ -38,7 +38,25 @@ let read_test filename =
            | v -> v
            | exception Invalid_argument _ -> failwith ("Bad value in register requirement: " ^ value)
          in
-         reqs := Memory {address; size; value} :: !reqs;
+         let tag = match tl with
+           | [] -> None
+           | "t"::_ -> Some true
+           | "f"::_ -> Some false
+           | h::_ -> failwith ("Bad tag in mem: " ^ h)
+         in
+         reqs := Memory {address; size; value; tag} :: !reqs;
+         read_req_aux ()
+      | ["tag"; address; tag] ->
+         let address = match Z.of_string address with
+           | v -> v
+           | exception Invalid_argument _ -> failwith ("Bad address in register requirement: " ^ address)
+         in
+         let tag = match tag with
+           | "t" -> true
+           | "f" -> false
+           | _ -> failwith ("Bad tag in tag: " ^ tag)
+         in
+         reqs := Tag { address; tag } :: !reqs;
          read_req_aux ()
 
       | s::t when s = end_token -> List.rev !reqs, t

@@ -18,7 +18,8 @@ let get_map s =
   | "x86-sail" ->
      map_from_list
        (("rflags.bits", "rflags")::
-          (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i)))
+          ("rip.address", "rip")::
+            (List.init 31 (fun i -> Printf.sprintf "R%d" i, Printf.sprintf "x%d" i)))
   | _ ->
      Printf.eprintf "Unknown register map: %s" s;
      exit 1

@@ -722,7 +722,6 @@ impl Target for X86 {
                     vec![struct_val]
                 );
                 let content = smt_value(&content, SourceLoc::unknown()).unwrap();
-                eprintln!("Reg {}, concat {:?} {:?}", reg, tag, content);
                 let var = solver.define_const(Exp::Concat(Box::new(tag), Box::new(content)), SourceLoc::unknown());
                 Some(Val::Symbolic(var))
             }
