@@ -176,8 +176,7 @@ pub fn parse_instrs<'a, B:BV>(sexp: &'a Sexp<'a>) -> Result<Vec<Instr<'a, B>>, S
     results.map(|mut l| l.drain(..).filter(|instr| !undefined_or_unsupported(instr)).collect())
 }
 
-fn imm_size<'a>(ty: &'a str) -> usize {
-    let opsize = 4;
+fn imm_size<'a>(operand_size: usize, address_size: usize, ty: &'a str) -> usize {
     match ty {
         // TODO: operand-size attr for C P PD? PS? S? SD? SS? V X Y Z
         "A" => panic!("Memory-only type for immediate operand"),
@@ -187,10 +186,10 @@ fn imm_size<'a>(ty: &'a str) -> usize {
         "PI" => 16,
         "Q" => 8,
         "SI" => 4,
-        "V" => opsize,
+        "V" => operand_size,
         "W" => 2,
-        "Y" => 2*opsize, // maybe assert opsize != 1?
-        "Z" => if opsize == 2 { 2 } else { 4 },
+        "Y" => 2*operand_size, // maybe assert opsize != 1?
+        "Z" => if operand_size == 2 { 2 } else { 4 },
         _ => panic!("Don't support type {} yet", ty),
     }
 }
@@ -208,6 +207,23 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
     let mut rng = rand::thread_rng();
     let i = rng.gen_range(0, instructions.len());
     let instr = &instructions[i];
+
+    let rex: Option<u8> = if rng.gen() {
+        Some(0x40 + rng.gen_range(0, 16))
+    } else {
+        None
+    };
+    let op_size_prefix = rng.gen_ratio(1,4);
+    let ad_size_prefix = rng.gen_ratio(1,4);
+    /* 3.6.1 Operand Size and Address Size in 64-Bit Mode */
+    let operand_size =
+        match (rex, op_size_prefix) {
+            (Some(r), _) if r & 0b00001000 == 1 => 8,  // REX.W
+            (_, false) => 4,
+            (_, true) => 2,
+        };
+    let address_size = if ad_size_prefix { 4 } else { 8 };
+
     let mut modrm_reg: Option<u8> = instr.opcode_in_reg.map(|b| b << 3);
     let mut modrm_rm: Option<u8> = None;
     let mut sib: Option<u8> = None;
@@ -254,10 +270,11 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
         match operand {
             Addressing("E", _) => fill_modrm(RM),
             Addressing("G", _) => fill_modrm(Reg),
-            Addressing("I" ,ty) => imm_bytes += imm_size(ty),
-            Addressing("J", ty) => imm_bytes += imm_size(ty),
+            Addressing("I" ,ty) => imm_bytes += imm_size(operand_size, address_size, ty),
+            Addressing("J", ty) => imm_bytes += imm_size(operand_size, address_size, ty),
             Addressing("L", _) => imm_bytes += 1,
             Addressing("M", _) => fill_modrm(RM), // TODO: only memory?
+            Addressing("O", _) => imm_bytes += address_size,
             Addressing("R", _) => fill_modrm(RMReg),
             Addressing("U", _) => fill_modrm(RMReg),
             Addressing("V", _) => fill_modrm(Reg),
@@ -281,17 +298,13 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
             Some((rm & 0xc7) | (reg & 0x38))
         }
     };
-    let mut encoding_be =
-        if let Some(byte) = modrm {
-            let e = instr.opcode.append(B::new(byte as u64, 8)).unwrap();
-            if let Some(byte) = sib {
-                e.append(B::new(byte as u64, 8)).unwrap()
-            } else {
-                e
-            }
-        } else {
-            instr.opcode
-        };
+    let mut encoding_be = B::new(0,0);
+    if op_size_prefix { encoding_be = encoding_be.append(B::new(0x66, 8)).unwrap(); };
+    if ad_size_prefix { encoding_be = encoding_be.append(B::new(0x67, 8)).unwrap(); };
+    if let Some(byte) = rex { encoding_be = encoding_be.append(B::new(byte as u64, 8)).unwrap(); };
+    encoding_be = encoding_be.append(instr.opcode).unwrap();
+    if let Some(byte) = modrm { encoding_be = encoding_be.append(B::new(byte as u64, 8)).unwrap() };
+    if let Some(byte) = sib { encoding_be = encoding_be.append(B::new(byte as u64, 8)).unwrap() };
     for _i in 0..disp_bytes {
         encoding_be = encoding_be.append(B::new(rng.gen_range(0,256), 8)).unwrap();
     }
@@ -301,5 +314,13 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
     // The opcode maps are in big endian (?!), and we also add modrm
     // in the least significant byte, so reverse it.
     let encoding = B::from_bytes(&encoding_be.to_le_bytes());
-    (encoding, instr.small_description())
+    let description =
+        format!(
+            "{}{}{}{}",
+            if op_size_prefix { "0x66 " } else { "" },
+            if ad_size_prefix { "0x67 " } else { "" },
+            if let Some(r) = rex { format!("{:#02x} ", r) } else { String::from("") },
+            instr.small_description()
+        );
+    (encoding, description)
 }
