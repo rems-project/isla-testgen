@@ -224,6 +224,11 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
         };
     let address_size = if ad_size_prefix { 4 } else { 8 };
 
+    if operand_size == 8 && matches!(instr.name, "DIV" | "SHRD" | "SHLD") {
+        eprintln!("Skipping 64-bit instruction that requires unsupported 128-bit integer {}", instr.name);
+        return sample(instructions);
+    }
+
     let mut modrm_reg: Option<u8> = instr.opcode_in_reg.map(|b| b << 3);
     let mut modrm_rm: Option<u8> = None;
     let mut sib: Option<u8> = None;
