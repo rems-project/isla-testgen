@@ -1,6 +1,13 @@
+type register = {
+  name : string;
+  bitsize : int;
+  number : int;
+}
+
 type connection = {
   fd : Unix.file_descr;
   verbose : bool;
+  registers : register list;
 }
 
 type command = {
@@ -47,19 +54,6 @@ let read_response con =
   then raise @@ ProtocolError (Printf.sprintf "Packet checksum mismatch: %02x vs %s" !checksum reported_checksum);
   ignore (Unix.write con.fd ack 0 1);
   Bytes.sub buf (start + 1) (bytes_read - 4 - start)
-
-let connect verbose =
-  let open Unix in
-  let addr = ADDR_INET (inet_addr_loopback, 1234) in
-  let fd = socket PF_INET SOCK_STREAM 0 in
-  connect fd addr;
-  let con = { fd; verbose } in
-  begin  
-    match Unix.select [con.fd] [] [] 0.5 with
-    | [_], _, _ -> Printf.printf "Initial repsonse: %s\n%!" (read_response con |> Bytes.to_string)
-    | _ -> ()
-  end;
-  con
 
 let start_command s =
   let buf = Buffer.create 128 in
@@ -248,3 +242,56 @@ let do_breakpoint con start ty addr kind =
 
 let insert_breakpoint con ty addr kind = do_breakpoint con "Z" ty addr kind
 let remove_breakpoint con ty addr kind = do_breakpoint con "z" ty addr kind
+
+(* This is very lax about XML namespace handling - it basically ignores them *)
+
+let read_regs con =
+  try
+    let next_regnum = ref 0 in
+    let rec file name =
+      let content = qxfer con "features" name in
+      let open Xmlm in
+      let xml_input = make_input ~ns:(fun s -> Some s) (`String (0, content)) in
+      let el ((_,tag),attrs) sub =
+        let find_attr name = List.find_map (fun ((_,n),v) -> if n = name then Some v else None) attrs in
+        if tag = "reg" then
+          let number = Option.value ~default:(!next_regnum) (Option.map int_of_string (find_attr "regnum")) in
+          next_regnum := number + 1;
+          let name = find_attr "name" in
+          let bitsize = find_attr "bitsize" in
+          match name, bitsize with
+          | None, _ -> prerr_endline "Warning: register without name"; []
+          | Some name, None -> Printf.eprintf "Warning: register %s has no bitsize" name; []
+          | Some name, Some bitsize -> [{ name; bitsize = int_of_string bitsize; number }]
+        else if tag = "include" then
+          match find_attr "href" with
+          | None -> prerr_endline "Warning: include without href"; []
+          | Some filename -> file filename
+        else
+          List.concat sub
+      in
+      snd (input_doc_tree ~el ~data:(fun _ -> []) xml_input)
+    in file "target.xml"
+  with Xmlm.Error ((line,col), error) -> begin
+      Printf.eprintf "Target features XML parsing error at %d.%d: %s" line col (Xmlm.error_message error);
+      exit 1
+    end
+
+let connect verbose =
+  let open Unix in
+  let addr = ADDR_INET (inet_addr_loopback, 1234) in
+  let fd = socket PF_INET SOCK_STREAM 0 in
+  connect fd addr;
+  let con = { fd; verbose; registers = [] } in
+  begin  
+    match Unix.select [con.fd] [] [] 0.5 with
+    | [_], _, _ -> Printf.printf "Initial repsonse: %s\n%!" (read_response con |> Bytes.to_string)
+    | _ -> ()
+  end;
+  let registers = read_regs con in
+  { con with registers }
+
+let find_register con regmap name =
+  try
+    List.find (fun r' -> String.compare r'.name (Regmap.lookup regmap name) == 0) con.registers
+  with Not_found -> failwith ("Register " ^ name ^ " not found")

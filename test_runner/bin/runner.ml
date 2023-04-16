@@ -43,12 +43,11 @@ let test_file =
 let regmap = Regmap.get_map !regmap;;
 let script = Parser.read_test test_file
 let con = Gdb.connect !gdb_verbose;;
-let regs = Readregs.read_regs con;;
 if !wait_for_breakpoint then ignore (Gdb.continue con None);;
 let result =
   if !setup_only
-  then (Runner.setup !verbose regmap con regs script; 0)
-  else Runner.run_test !verbose !run_type regmap con regs script;;
+  then (Runner.setup !verbose regmap con script; 0)
+  else Runner.run_test !verbose !run_type regmap con script;;
 match !end_action with
 | NoAction -> ()
 | Kill -> ignore (Gdb.kill con)

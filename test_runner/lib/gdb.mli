@@ -1,4 +1,5 @@
-type connection = { fd : Unix.file_descr; verbose : bool }
+type register = { name : string; bitsize : int; number : int; }
+type connection = { fd : Unix.file_descr; verbose : bool; registers : register list }
 type command
 
 exception CommandError of string
@@ -16,6 +17,8 @@ val check_bytes_or_error : string -> bytes -> unit
 
 val qxfer : connection -> string -> string -> string
 val qxfer_set : connection -> string -> string -> bytes -> unit
+
+val find_register : connection -> string Regmap.StringMap.t -> string -> register
 
 (** [read_register con i] will read register number [i], returning the size in bytes (will be rounded up) *)
 val read_register : connection -> int -> int * Z.t
