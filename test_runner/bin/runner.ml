@@ -8,6 +8,7 @@ let test_file = ref (None : string option)
 let run_type = ref (Runner.Breakpoint Gdb.Hardware)
 let verbose = ref false
 let gdb_verbose = ref false
+let wait = ref false
 let wait_for_breakpoint = ref false
 let end_action = ref NoAction
 let setup_only = ref false
@@ -19,6 +20,7 @@ let options = [
     ("--verbose", Arg.Set verbose, "Print more information");
     ("--gdb-verbose", Arg.Set gdb_verbose, "Print GDB protocol information");
     ("--sw-breakpoint", Arg.Unit (fun _ -> run_type := Runner.Breakpoint Gdb.Software), "Use a software breakpoint");
+    ("--wait", Arg.Set wait, "Wait for a second for the setup to complete");
     ("--wait-for-breakpoint", Arg.Set wait_for_breakpoint, "Run the processor until it hits a breakpoint before running test");
     ("--detach", Arg.Unit (fun _ -> end_action := Detach), "Send a detach request at the end of the test");
     ("--kill", Arg.Unit (fun _ -> end_action := Kill), "Send a kill request at the end of the test");
@@ -43,7 +45,11 @@ let test_file =
 let regmap = Regmap.get_map !regmap;;
 let script = Parser.read_test test_file
 let con = Gdb.connect !gdb_verbose;;
-if !wait_for_breakpoint then ignore (Gdb.continue con None);;
+if !wait then begin
+  Gdb.continue_no_wait con None;
+  Unix.sleep 1;
+  Gdb.interrupt con
+end else if !wait_for_breakpoint then ignore (Gdb.continue con None);;
 let result =
   if !setup_only
   then (Runner.setup !verbose regmap con script; 0)

@@ -1,5 +1,6 @@
 type register = { name : string; bitsize : int; number : int; }
-type connection = { fd : Unix.file_descr; verbose : bool; registers : register list }
+type register_cache
+type connection = { fd : Unix.file_descr; verbose : bool; registers : register list; mutable register_cache : register_cache option }
 type command
 
 exception CommandError of string
@@ -14,6 +15,7 @@ val command_append_bytes : command -> bytes -> unit
 val send_command : connection -> command -> unit
 val read_response : connection -> bytes
 val check_bytes_or_error : string -> bytes -> unit
+val interrupt : connection -> unit
 
 val qxfer : connection -> string -> string -> string
 val qxfer_set : connection -> string -> string -> bytes -> unit
@@ -36,8 +38,11 @@ val read_memory : connection -> Z.t -> int -> bytes
 (** [write_memory con address bytes] will write [bytes] to [address]. *)
 val write_memory : connection -> Z.t -> bytes -> unit
 
-(** Continue execution at current PC, or the given address. TODO: blocking? *)
+(** Continue execution at current PC, or the given address (blocks until stop). *)
 val continue : connection -> Z.t option -> bytes
+
+(** Continue execution at current PC, or the given address (doesn't wait). *)
+val continue_no_wait : connection -> Z.t option -> unit
 
 (** Execute a single step at the current PC, or the given address. *)
 val step : connection -> Z.t option -> bytes

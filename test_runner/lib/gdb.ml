@@ -4,10 +4,13 @@ type register = {
   number : int;
 }
 
+type register_cache = (int * Z.t) list
+
 type connection = {
   fd : Unix.file_descr;
   verbose : bool;
   registers : register list;
+  mutable register_cache : register_cache option;
 }
 
 type command = {
@@ -18,6 +21,26 @@ exception CommandError of string
 exception ProtocolError of string
 
 let ack = Bytes.of_string "+"
+
+let decompress bytes =
+  if Bytes.contains bytes '*' then begin
+      let buf = Buffer.create (Bytes.length bytes) in
+      let rec continue i =
+        match Bytes.index_from_opt bytes i '*' with
+        | None -> Buffer.add_subbytes buf bytes i (Bytes.length bytes - i)
+        | Some j ->
+           if j - i > 1 then begin
+               Buffer.add_subbytes buf bytes i (j - i - 1);
+               continue (j - 1)
+             end else begin
+               let l = Char.code (Bytes.get bytes (j + 1)) - 28 in
+               Buffer.add_bytes buf (Bytes.make l (Bytes.get bytes i));
+               continue (j + 2)
+             end
+      in
+      continue 0;
+      Buffer.to_bytes buf
+    end else bytes
 
 let read_response con =
   let buf = Bytes.create 1024 in
@@ -53,7 +76,8 @@ let read_response con =
           with _exn -> raise @@ ProtocolError ("Bad checksum in packet: " ^ reported_checksum))
   then raise @@ ProtocolError (Printf.sprintf "Packet checksum mismatch: %02x vs %s" !checksum reported_checksum);
   ignore (Unix.write con.fd ack 0 1);
-  Bytes.sub buf (start + 1) (bytes_read - 4 - start)
+  let result = Bytes.sub buf (start + 1) (bytes_read - 4 - start) in
+  decompress result
 
 let start_command s =
   let buf = Buffer.create 128 in
@@ -97,10 +121,10 @@ let bytes_to_hex bytes =
   hex
 
 let qxfer con object_name annex =
-  let buf = Buffer.create 1024 in
+  let bufsize = 4096 in
+  let buf = Buffer.create bufsize in
   let rec continue offset =
-    let read_len = 1024 in
-    let cmd = Printf.sprintf "qXfer:%s:read:%s:%x,%x" object_name annex offset read_len in
+    let cmd = Printf.sprintf "qXfer:%s:read:%s:%x,%x" object_name annex offset bufsize in
     send_command con (start_command cmd);
     let response = read_response con in
     let len = Bytes.length response in
@@ -110,7 +134,7 @@ let qxfer con object_name annex =
        if len > 1 then
          Buffer.add_subbytes buf response 1 (len - 1);
        if c = 'm'
-       then continue (offset + read_len)
+       then continue (offset + len - 1)
        else buf
     | 'E' ->
        raise @@ CommandError (Printf.sprintf "Error in response to %s: %s" cmd (Bytes.to_string response))
@@ -139,18 +163,46 @@ let check_bytes_or_error context response =
   else ()
 
 (* TODO: only convert byte order if necessary *)
+let hex_to_Z_sub bytes offset len =
+  let big_endian =
+    String.init (2*len) (fun i -> Bytes.get bytes (2*offset + 2*len - 2 - 2 * (i / 2) + i mod 2))
+  in
+  Z.of_string_base 16 big_endian
+
 let hex_to_Z bytes =
   let len = Bytes.length bytes in
-  let big_endian =
-    String.init len (fun i -> Bytes.get bytes (len - 2 - 2 * (i / 2) + i mod 2))
-  in
-  len / 2, Z.of_string_base 16 big_endian
+  len / 2, hex_to_Z_sub bytes 0 (len / 2)
+
+let fill_cache con =
+  match con.register_cache with
+  | Some cache ->
+     cache
+  | None ->
+     send_command con (start_command "g");
+     let response = read_response con in
+     check_bytes_or_error "reading registers" response;
+     Printf.printf "Filling reg cache using %d hex bytes\n%!" (Bytes.length response);
+     let next_reg (i,cache) reg =
+       let bytesize = (reg.bitsize + 7) / 8 in
+       Printf.printf "Reg %s at offset %d with %d bytes" reg.name i bytesize;
+       let value = hex_to_Z_sub response i bytesize in
+       Printf.printf " value %s\n%!" (Z.format "%x" value);
+       (i + bytesize, (bytesize, value)::cache)
+     in
+     let _, rcache = List.fold_left next_reg (0,[]) con.registers in
+     let cache = List.rev rcache in
+     con.register_cache <- Some cache;
+     cache
 
 let read_register con i =
   send_command con (start_command (Printf.sprintf "p%x" i));
   let response = read_response con in
-  check_bytes_or_error "reading register" response;
-  hex_to_Z response
+  if Bytes.length response == 0 then begin
+      List.nth (fill_cache con) i
+    end else begin
+      check_bytes_or_error "reading register" response;
+      hex_to_Z response
+    end
 
 let hex_of_Z size value =
   let hex = Bytes.make (2*size) '0' in
@@ -165,12 +217,32 @@ let hex_of_Z size value =
 let bytes_for_bits size =
   if size mod 8 == 0 then size / 8 else 1 + size / 8
 
+let list_nth_update l i v =
+  List.mapi (fun j w -> if i == j then v else w) l
+
+let send_all_registers con cache =
+  let command = start_command "G" in
+  List.iter (fun (size, value) ->
+      let hex_value = hex_of_Z size value in
+      command_append_bytes command hex_value) cache;
+  send_command con command;
+  ok_or_error "writing all registers" (read_response con)
+
 let write_register con i size value =
   let hex_value = hex_of_Z (bytes_for_bits size) value in
   let command = start_command (Printf.sprintf "P%x=" i) in
   command_append_bytes command hex_value;
   send_command con command;
-  ok_or_error "writing register" (read_response con)
+  let response = read_response con in
+  if Bytes.length response == 0 then begin
+      let cache = fill_cache con in
+      let cache = list_nth_update cache i (bytes_for_bits size, value) in
+      con.register_cache <- Some cache;
+      send_all_registers con cache
+  end else begin
+      con.register_cache <- None;
+      ok_or_error "writing register" response
+    end
 
 let hex_to_bytes hex_bytes =
   let size = Bytes.length hex_bytes / 2 in
@@ -198,15 +270,20 @@ let write_memory con addr bytes =
   send_command con command;
   ok_or_error "writing memory" (read_response con)
 
-let cont con cmd addr_opt =
+let cont_nw con cmd addr_opt =
+  con.register_cache <- None;
   let command = match addr_opt with
     | None -> cmd
     | Some addr -> Printf.sprintf "%s%s" cmd (Z.format "%x" addr)
   in
-  send_command con (start_command command);
+  send_command con (start_command command)
+
+let cont con cmd addr_opt =
+  cont_nw con cmd addr_opt;
   read_response con
 
 let continue con addr_opt = cont con "c" addr_opt
+let continue_no_wait con addr_opt = cont_nw con "c" addr_opt
 let step con addr_opt = cont con "s" addr_opt
 let kill con =
   send_command con (start_command "k");
@@ -282,14 +359,23 @@ let connect verbose =
   let addr = ADDR_INET (inet_addr_loopback, 1234) in
   let fd = socket PF_INET SOCK_STREAM 0 in
   connect fd addr;
-  let con = { fd; verbose; registers = [] } in
+  let con = { fd; verbose; registers = []; register_cache = None } in
   begin  
     match Unix.select [con.fd] [] [] 0.5 with
-    | [_], _, _ -> Printf.printf "Initial repsonse: %s\n%!" (read_response con |> Bytes.to_string)
+    | [_], _, _ -> Printf.printf "Initial response: %s\n%!" (read_response con |> Bytes.to_string)
     | _ -> ()
   end;
+  send_command con (start_command "qSupported:xmlRegisters=i386");
+  let _ = read_response con in
+  send_command con (start_command "Hgp0.0");
+  let _ = read_response con in
   let registers = read_regs con in
   { con with registers }
+
+let interrupt con =
+  if con.verbose then Printf.printf "Interrupting\n%!";
+  let _ = Unix.write con.fd (Bytes.of_string "\003") 0 1 in
+  ignore (read_response con)
 
 let find_register con regmap name =
   try
