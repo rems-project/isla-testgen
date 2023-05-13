@@ -47,7 +47,7 @@ use isla_lib::log;
 use isla_lib::memory;
 use isla_lib::smt;
 use isla_lib::smt::smtlib::Exp;
-use isla_lib::smt::{Sym, Accessor, Checkpoint, Event, Model, SmtResult, Solver};
+use isla_lib::smt::{Sym, Checkpoint, Event, Model, SmtResult, Solver};
 use isla_lib::zencode;
 
 // TODO: get smt.rs to return a BV
@@ -246,91 +246,6 @@ where
     m
 }
 
-fn apply_accessors<'a, B: BV>(
-    shared_state: &'a ir::SharedState<B>,
-    start_ty: &'a Ty<Name>,
-    accessors: &Vec<Accessor>,
-    start_value: &'a Val<B>,
-) -> (&'a Ty<Name>, &'a Val<B>) {
-    let mut ty = start_ty;
-    let mut value = start_value;
-    for Accessor::Field(field) in accessors {
-        match ty {
-            Ty::Struct(name) => {
-                ty = shared_state.structs.get(&name).unwrap().get(&field).unwrap();
-                match value {
-                    Val::Struct(field_vals) => value = field_vals.get(&field).unwrap(),
-                    _ => panic!("Bad value for struct {:?}", value),
-                }
-            }
-            _ => panic!("Bad type for struct {:?}", ty),
-        }
-    }
-    (ty, value)
-}
-
-fn apply_accessors_ty<'a, B: BV>(
-    shared_state: &'a ir::SharedState<B>,
-    start_ty: &'a Ty<Name>,
-    accessors: &Vec<Accessor>,
-) -> &'a Ty<Name> {
-    let mut ty = start_ty;
-    for Accessor::Field(field) in accessors {
-        match ty {
-            Ty::Struct(name) => {
-                ty = shared_state.structs.get(&name).unwrap().get(&field).unwrap();
-            }
-            _ => panic!("Bad type for struct {:?}", ty),
-        }
-    }
-    ty
-}
-
-fn make_gv_accessors(accessors: &[Accessor]) -> Vec<GVAccessor<Name>> {
-    accessors
-        .iter()
-        .map(|x| match x {
-            Accessor::Field(n) => GVAccessor::Field(*n),
-        })
-        .collect()
-}
-
-fn iter_struct_types<F, T, B: BV>(
-    shared_state: &ir::SharedState<B>,
-    f: &mut F,
-    ty: &Ty<Name>,
-    accessors: &mut Vec<GVAccessor<Name>>,
-    v: &Val<B>,
-    r: &mut T,
-) where
-    F: FnMut(&Ty<Name>, &Vec<GVAccessor<Name>>, &Val<B>, &mut T),
-{
-    match ty {
-        Ty::Struct(name) => match v {
-            Val::Struct(field_vals) => {
-                let fields = shared_state.structs.get(name).unwrap();
-                for (field, ty) in fields {
-                    accessors.push(GVAccessor::Field(*field));
-                    iter_struct_types(shared_state, f, ty, accessors, field_vals.get(field).unwrap(), r);
-                    accessors.pop();
-                }
-            }
-            _ => panic!("Struct type, non-struct value {:?}", v),
-        },
-        Ty::FixedVector(_, element_type) => match v {
-            Val::Vector(elements) => {
-                for (i, element) in elements.iter().enumerate() {
-                    accessors.push(GVAccessor::Element(i));
-                    iter_struct_types(shared_state, f, element_type, accessors, element, r);
-                    accessors.pop();
-                }
-            }
-            _ => panic!("Vector type, non-vector value {:?}", v),
-        },
-        _ => f(ty, accessors, v, r),
-    }
-}
-
 /// Extract pre- and post-states from the event trace and the model.
 /// The first read after initialisation is recorded for the pre-state:
 /// if it was concrete during the symbolic execution then it was
@@ -342,7 +257,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     _isa_config: &ISAConfig<B>,
     checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<'ir, B>,
-    initial_frame: &Frame<'ir, B>,
+    _initial_frame: &Frame<'ir, B>,
     final_frame: &Frame<'ir, B>,
     register_types: &HashMap<Name, Ty<Name>>,
     symbolic_regions: &[Range<memory::Address>],
@@ -411,18 +326,14 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let mut current_memory: BTreeMap<u64, Option<u8>> = BTreeMap::new();
     let mut current_tag_memory: BTreeMap<u64, Option<bool>> = BTreeMap::new();
     let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
-    // The boolean in current_registers indicates that a register is
-    // set by the harness or the test sequence, and so should be
-    // reported to the user.
-    let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), (bool, Option<GroundVal<B>>)> = HashMap::new();
-    let mut skipped_register_reads: HashSet<(Name, Vec<GVAccessor<Name>>)> = HashSet::new();
+    let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), Option<GroundVal<B>>> = HashMap::new();
 
     // Ensure that system registers that are essential for the harness are included even
     // if they don't appear in the event trace.
     let mut missing: HashSet<(String, Vec<GVAccessor<String>>)> = target.essential_regs().drain(..).collect();
 
     for regacc in target.regs() {
-        if let Some(name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
+        if let Some(_name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
             if let Some(sym) = initial_register_map.get(&regacc) {
                 if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym))? {
                     missing.remove(&regacc);
@@ -441,8 +352,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                                   missing.join(", "))));
     }
     for (regacc, val) in final_register_vals {
-        // TODO: the bool isn't right...
-        current_registers.insert(regacc_int(shared_state, &regacc), (true, get_model_val(&mut model, &val)?));
+        current_registers.insert(regacc_int(shared_state, &regacc), get_model_val(&mut model, &val)?);
     }
 
     let mut init_complete = false;
@@ -454,14 +364,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
             Event::ReadMem { value, read_kind: _, address, bytes, tag_value, opts: _, region: _ } if init_complete || event.is_ifetch() => {
                 if !init_complete {
                     init_complete = true;
-                    // We explicitly reset these registers to symbolic variables after
-                    // symbolic execution of the model initialisation, so throw away
-                    // any current value, especially as we want to find out if we need
-                    // to set them in the actual test and so should not ignore the next
-                    // write.
-//                    for regacc in &harness_registers {
-//                        current_registers.remove(regacc);
-//                    }
                 }
                 let address = match get_model_val(&mut model, address)? {
                     Some(GroundVal::Bits(bs)) => bs,
@@ -548,106 +450,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                     }
                 }
             }
-            // Look at assumptions too because they come from setting initial register values with -R
-            Event::ReadReg(reg, accessors, value) | Event::AssumeReg(reg, accessors, value) => {
-                let is_assume = matches!(event, Event::AssumeReg(_,_,_));
-                let under_accessor = !accessors.is_empty();
-                let mut process_read_bits =
-                    |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, skipped: &mut HashSet<_>| {
-                        let key = (*reg, accessors.clone());
-                        if skipped.contains(&key) {
-                            return;
-                        };
-                        if init_complete || is_assume {
-                            match ty {
-                                Ty::Bits(_) | Ty::Bool | Ty::I128 => {
-                                    let model_value = get_model_val(&mut model, value).expect("get_model_val");
-                                    if matches!(value, Val::Symbolic(_)) || is_assume {
-/*                                        if current_registers.insert(key.clone(), (true, model_value)).is_none() {
-                                            match model_value {
-                                                Some(val) => {
-                                                    if under_accessor { // TODO: all init values should be above
-                                                        initial_registers.insert(key, val);
-                                                    }
-                                                }
-                                                None => println!(
-                                                    "Ambivalent read of register {}",
-                                                    regacc_to_str(shared_state, &key)
-                                                ),
-                                            }
-                                        }*/
-                                    } else {
-                                        // Otherwise when we read a concrete initial value, so it comes from
-/*                                        // initialisation and does not need to be set by the harness
-                                        let post_init =
-                                            if let Some((pi, _)) = current_registers.get(&key) {
-                                                *pi
-                                            } else {
-                                                false
-                                            };
-                                        current_registers.insert(key.clone(), (post_init, model_value));*/
-                                    }
-                                }
-                                _ => {
-                                    println!(
-                                        "Skipping read of {} with value {:?} due to unsupported type {:?}",
-                                        regacc_to_str(shared_state, &key),
-                                        value,
-                                        ty
-                                    );
-                                    skipped.insert(key);
-                                }
-                            }
-                        }
-                    };
-                match register_types.get(reg) {
-                    Some(ty) => {
-                        let (read_ty, read_value) = if is_assume {
-                            (apply_accessors_ty(shared_state, ty, accessors), value)
-                        } else {
-                            apply_accessors(shared_state, ty, accessors, &value)
-                        };
-                        iter_struct_types(
-                            shared_state,
-                            &mut process_read_bits,
-                            &read_ty,
-                            &mut make_gv_accessors(accessors),
-                            &read_value,
-                            &mut skipped_register_reads,
-                        )
-                    }
-                    None => panic!("Missing type for register {}", shared_state.symtab.to_str(*reg)),
-                }
-            }
-            Event::WriteReg(reg, accessors, value) => {
-                let mut process_write =
-                    |ty: &Ty<Name>, accessors: &Vec<GVAccessor<Name>>, value: &Val<B>, _: &mut ()| {
-                        let key = (*reg, accessors.clone());
-                        match ty {
-                            Ty::Bits(_) | Ty::Bool => {
-                                let val = get_model_val(&mut model, value).expect("get_model_val");
-//                                if init_complete {
-//                                    current_registers.insert(key, (true, val));
-//                                }
-                            }
-                            _ => (),
-                        }
-                    };
-                match register_types.get(reg) {
-                    Some(ty) => {
-                        let (assigned_ty, assigned_value) = apply_accessors(shared_state, ty, accessors, &value);
-                        iter_struct_types(
-                            shared_state,
-                            &mut process_write,
-                            &assigned_ty,
-                            &mut make_gv_accessors(accessors),
-                            &assigned_value,
-                            &mut (),
-                        )
-                    }
-                    None => panic!("Missing type for register {}", shared_state.symtab.to_str(*reg)),
-                }
-            }
+            // Registers are handled directly above, not from the events
+            Event::ReadReg(_reg, _accessors, _value) | Event::AssumeReg(_reg, _accessors, _value) => (),
+            Event::WriteReg(_reg, _accessors, _value) => (),
             Event::Instr(_) if !init_complete => {
                 // We should see the instruction fetch first and look
                 // at events from then on
@@ -696,12 +501,10 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     }
     println!();
     print!("Final registers: ");
-    for (regacc, (post_init, value)) in &current_registers {
-        if *post_init {
-            match value {
-                Some(val) => print!("{}:{} ", regacc_to_str(shared_state, regacc), val),
-                None => print!("{}:?? ", regacc_to_str(shared_state, regacc)),
-            }
+    for (regacc, value) in &current_registers {
+        match value {
+            Some(val) => print!("{}:{} ", regacc_to_str(shared_state, regacc), val),
+            None => print!("{}:?? ", regacc_to_str(shared_state, regacc)),
         }
     }
     println!();
@@ -752,7 +555,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         initial_registers.iter().map(|((reg, acc), gv)| (regacc_name(shared_state, *reg, acc), *gv)).collect();
     let post_registers = current_registers
         .iter()
-        .filter_map(|((reg, acc), (_, optional_gv))| match optional_gv {
+        .filter_map(|((reg, acc), optional_gv)| match optional_gv {
             Some(gv) => Some((regacc_name(shared_state, *reg, acc), *gv)),
             None => None,
         })
