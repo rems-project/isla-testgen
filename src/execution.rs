@@ -38,6 +38,7 @@ use std::time::Instant;
 
 use crate::extract_state::GVAccessor;
 use crate::target::{Target, TranslationTableInfo};
+use crate::undef_checker::check_undefined_bits;
 
 use isla_lib::bitvector::{BV, b64::B64};
 use isla_lib::error::ExecError;
@@ -774,20 +775,25 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                 Ok((val, mut frame)) => {
                     target.post_instruction(shared_state, &mut frame, &mut solver);
                     let check = solver.check_sat();
-                    let events = events_of(&solver, dump_events);
+                    // We always need events to do the undefined bits check
+                    let events = events_of(&solver, true);
                     if matches!(check, SmtResult::Sat) {
                         if let Some((ex_val, ex_loc)) = frame.get_exception() {
                             let s = ex_val.to_string(&shared_state.symtab);
                             collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
                         } else {
-                            match val {
-                                Val::Unit => collected
-                                    .push((postprocess(target, tid, task_id, frame, shared_state, solver, &events), events)),
-                                _ =>
-                                // Anything else is an error!
-                                {
-                                    log_from!(tid, log::VERBOSE, format!("Unexpected footprint return value: {:?}", val));
-                                    collected.push((Err(format!("Unexpected footprint return value: {:?}", val)), events))
+                            if let Err(m) = check_undefined_bits(&events, shared_state.symtab.files()) {
+                                collected.push((Err(m), events))
+                            } else {
+                                match val {
+                                    Val::Unit => collected
+                                        .push((postprocess(target, tid, task_id, frame, shared_state, solver, &events), events)),
+                                    _ =>
+                                    // Anything else is an error!
+                                    {
+                                        log_from!(tid, log::VERBOSE, format!("Unexpected footprint return value: {:?}", val));
+                                        collected.push((Err(format!("Unexpected footprint return value: {:?}", val)), events))
+                                    }
                                 }
                             }
                         }

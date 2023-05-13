@@ -41,3 +41,4 @@ pub mod extract_state;
 pub mod generate_object;
 pub mod generate_testfile;
 pub mod target;
+pub mod undef_checker;
