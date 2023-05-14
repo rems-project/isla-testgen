@@ -306,7 +306,7 @@ let do_breakpoint con start ty addr kind =
   command_append command (breakpoint_code ty);
   command_append command (Z.format "%x" addr);
   command_append command ",";
-  command_append command (Option.value kind ~default:"0");
+  command_append command (Printf.sprintf "%x" (Option.value kind ~default:0));
   send_command con command;
   let response = Bytes.to_string (read_response con) in
   if String.length response = 3 && response.[0] = 'E'

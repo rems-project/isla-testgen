@@ -13,6 +13,7 @@ let wait_for_breakpoint = ref false
 let end_action = ref NoAction
 let setup_only = ref false
 let regmap = ref ""
+let bp_kind = ref None
 
 let options = [
     ("--single-step", Arg.Unit (fun _ -> run_type := Runner.SingleStep None), "Run in single step mode");
@@ -26,6 +27,7 @@ let options = [
     ("--kill", Arg.Unit (fun _ -> end_action := Kill), "Send a kill request at the end of the test");
     ("--setup-only", Arg.Set setup_only, "Only run the setup");
     ("--reg-map", Arg.Set_string regmap, "Use named register map");
+    ("--breakpoint-kind", Arg.Int (fun i -> bp_kind := Some i), "Use breakpoint kind (usually #bytes)");
   ]
 let anon_arg s =
   match !test_file with
@@ -53,7 +55,7 @@ end else if !wait_for_breakpoint then ignore (Gdb.continue con None);;
 let result =
   if !setup_only
   then (Runner.setup !verbose regmap con script; 0)
-  else Runner.run_test !verbose !run_type regmap con script;;
+  else Runner.run_test !verbose !run_type !bp_kind regmap con script;;
 match !end_action with
 | NoAction -> ()
 | Kill -> ignore (Gdb.kill con)

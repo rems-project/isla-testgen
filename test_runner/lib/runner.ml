@@ -38,7 +38,7 @@ let setup verbose regmap con test =
   in
   List.iter set test.prestate
 
-let run_test verbose run_type regmap con test =
+let run_test verbose run_type bp_kind regmap con test =
   setup verbose regmap con test;
   let execute () =
     match run_type with
@@ -49,7 +49,7 @@ let run_test verbose run_type regmap con test =
           | None -> failwith "No stop location in test (necessary in breakpoint mode)"
         in
         if verbose then Printf.printf "Setting breakpoint at %s\n%!" (Z.format "#x" stop);
-        Gdb.insert_breakpoint con bp_type stop None;
+        Gdb.insert_breakpoint con bp_type stop bp_kind;
         if verbose then Printf.printf "Running from %s\n%!" (Option.fold ~none:"current pc" ~some:(Z.format "#x") test.run.start);
         let _ = Gdb.continue con test.run.start in ()
       end

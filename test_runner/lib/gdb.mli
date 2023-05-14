@@ -56,6 +56,6 @@ val detach : connection -> bytes
 type breakpoint = Software | Hardware | WriteWatch | ReadWatch | AccessWatch
 
 val insert_breakpoint :
-  connection -> breakpoint -> Z.t -> string option -> unit
+  connection -> breakpoint -> Z.t -> int option -> unit
 val remove_breakpoint :
-  connection -> breakpoint -> Z.t -> string option -> unit
+  connection -> breakpoint -> Z.t -> int option -> unit
