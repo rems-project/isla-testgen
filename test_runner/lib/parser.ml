@@ -13,7 +13,7 @@ let read_test filename =
       let line = input_line channel in
       let tokens = String.split_on_char ' ' line in
       match strip_comments tokens with
-      | ["reg"; name; size; value] ->
+      | "reg"::name::size::value::t ->
          let size = match int_of_string_opt size with
            | None -> failwith ("Bad size in register requirement: " ^ size)
            | Some i -> i
@@ -22,9 +22,19 @@ let read_test filename =
            | v -> v
            | exception Invalid_argument _ -> failwith ("Bad value in register requirement: " ^ value)
          in
-         reqs := Register {name; size; value} :: !reqs;
+         let mask = match t with
+           | [] -> None
+           | ["mask"; v] ->
+              begin
+                match Z.of_string v with
+                | v -> Some v
+                | exception Invalid_argument _ -> failwith ("Bad mask in register requirement: " ^ v)
+              end
+           | _ -> failwith ("Bad register requirement, need 'name size value tag [\"mask\" mask]': " ^ line)
+         in
+         reqs := Register {name; size; value; mask} :: !reqs;
          read_req_aux ()
-      | "reg"::_ -> failwith ("Bad register requirement, need 'name size value tag': " ^ line)
+      | "reg"::_ -> failwith ("Bad register requirement, need 'name size value tag [\"mask\" mask]': " ^ line)
       | "mem"::address::size::value::tl ->
          let address = match Z.of_string address with
            | v -> v

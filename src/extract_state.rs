@@ -35,6 +35,7 @@ use std::ops::Range;
 
 use crate::target::Target;
 use crate::execution::{apply_accessor_type, apply_accessor_val};
+use crate::undef_checker::check_undefined_bits;
 
 use isla_lib::bitvector::BV;
 use isla_lib::config::ISAConfig;
@@ -67,7 +68,7 @@ fn bits_to_bv<B: BV>(bits: &[bool]) -> B {
 #[derive(Clone, Copy, Debug)]
 pub enum GroundVal<B> {
     Bool(bool),
-    Bits(B),
+    Bits(B, B),  // Value, undef bits
 }
 
 impl<B: BV> std::fmt::Display for GroundVal<B> {
@@ -75,7 +76,13 @@ impl<B: BV> std::fmt::Display for GroundVal<B> {
         match self {
             GroundVal::Bool(true) => write!(f, "true"),
             GroundVal::Bool(false) => write!(f, "false"),
-            GroundVal::Bits(bs) => std::fmt::Display::fmt(&bs, f),
+            GroundVal::Bits(bs, undefs) => {
+                if undefs.is_zero() {
+                    std::fmt::Display::fmt(&bs, f)
+                } else {
+                    write!(f, "{} & {}", bs, !*undefs)
+                }
+            }
         }
     }
 }
@@ -97,10 +104,19 @@ impl<S, T : PartialEq<S>> PartialEq<GVAccessor<S>> for GVAccessor<T> {
     }
 }
 
-fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<GroundVal<B>>, ExecError> {
+fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>, undef: &HashMap<Sym, B>) -> Result<Option<GroundVal<B>>, ExecError> {
     match val {
         Val::Symbolic(var) => match model.get_var(*var)? {
-            Some(Exp::Bits64(bits)) => Ok(Some(GroundVal::Bits(B::new(bits.lower_u64(), bits.len())))),
+            Some(Exp::Bits64(bits)) => {
+                let bits = B::new(bits.lower_u64(), bits.len());
+                let undefs = undef.get(var).map(|b| b.clone()).unwrap_or(B::zeros(bits.len()));
+                if (!undefs).is_zero() {
+                    // Register is undefined, so skip it
+                    Ok(None)
+                } else {
+                    Ok(Some(GroundVal::Bits(bits, undefs)))
+                }
+            }
             Some(Exp::Bits(bits)) => {
                 if bits.len() > 129 {
                     // TODO: a less hacky way of coping with this...
@@ -109,7 +125,14 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
                     // need to actually handle it
                     Ok(None)
                 } else {
-                    Ok(Some(GroundVal::Bits(bits_to_bv(&bits))))
+                    let bits: B = bits_to_bv(&bits);
+                    let undefs = undef.get(var).map(|b| b.clone()).unwrap_or(B::zeros(bits.len()));
+                    if (!undefs).is_zero() {
+                        // Register is undefined, so skip it
+                        Ok(None)
+                    } else {
+                        Ok(Some(GroundVal::Bits(bits, undefs)))
+                    }
                 }
             }
             Some(Exp::Bool(b)) => Ok(Some(GroundVal::Bool(b))),
@@ -117,10 +140,10 @@ fn get_model_val<B: BV>(model: &mut Model<B>, val: &Val<B>) -> Result<Option<Gro
             Some(exp) => Err(ExecError::Z3Error(format!("Bad bitvector model value {:?}", exp))),
         },
         Val::Bool(b) => Ok(Some(GroundVal::Bool(*b))),
-        Val::Bits(bs) => Ok(Some(GroundVal::Bits(*bs))),
+        Val::Bits(bs) => Ok(Some(GroundVal::Bits(*bs, B::zeros(bs.len())))),
         // See comment about I128 above, and note that if we wanted full I128 support we'd need to
         // add a case for symbolic values, above
-        Val::I128(i) => Ok(Some(GroundVal::Bits(B::zeros(128).add_i128(*i)))),
+        Val::I128(i) => Ok(Some(GroundVal::Bits(B::zeros(128).add_i128(*i), B::zeros(128)))),
         _ => Err(ExecError::Type(format!("Bad value {:?} in get_model_val", val), SourceLoc::unknown())),
     }
 }
@@ -303,21 +326,28 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     };
 
     let mut model = Model::new(&solver);
+    // Without completing the model we don't always get concrete
+    // values for derived values.
+    model.set_complete_model(true);
     log!(log::VERBOSE, format!("Model: {:?}", model));
+
+    let mut events = solver.trace().to_vec();
+    let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
+    let undef = check_undefined_bits(events.iter(), shared_state.symtab.files()).map_err(|m| ExecError::Unreachable(m))?;
 
     let mut instruction_locations = HashMap::new();
     for (pc_val, description) in instruction_pc_vals {
-        match get_model_val(&mut model, pc_val)? {
-            Some(GroundVal::Bits(bs)) => {
+        match get_model_val(&mut model, pc_val, &undef)? {
+            Some(GroundVal::Bits(bs, undefs)) => {
+                if !undefs.is_zero() {
+                    panic!("Location {:?} for instruction {} has undefined bits!", pc_val, description);
+                }
                 instruction_locations.insert(bs.lower_u64(), description.clone());
             },
             Some(GroundVal::Bool(_)) => panic!("Instruction {} is located at a bool? ({:?})", description, pc_val),
             None => eprintln!("Instruction {} at {:?} doesn't have a concrete location", description, pc_val),
         }
     }
-
-    let mut events = solver.trace().to_vec();
-    let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
 
     let harness_registers: HashSet<(Name, Vec<GVAccessor<Name>>)> =
         target.regs().iter().map(|ra| regacc_int(shared_state, ra)).collect();
@@ -335,7 +365,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     for regacc in target.regs() {
         if let Some(_name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
             if let Some(sym) = initial_register_map.get(&regacc) {
-                if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym))? {
+                if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym), &undef)? {
                     missing.remove(&regacc);
                     initial_registers.insert(regacc_int(shared_state, &regacc), ground_val);
                 }
@@ -352,7 +382,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                                   missing.join(", "))));
     }
     for (regacc, val) in final_register_vals {
-        current_registers.insert(regacc_int(shared_state, &regacc), get_model_val(&mut model, &val)?);
+        current_registers.insert(regacc_int(shared_state, &regacc), get_model_val(&mut model, &val, &undef)?);
     }
 
     let mut init_complete = false;
@@ -365,15 +395,23 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                 if !init_complete {
                     init_complete = true;
                 }
-                let address = match get_model_val(&mut model, address)? {
-                    Some(GroundVal::Bits(bs)) => bs,
+                let address = match get_model_val(&mut model, address, &undef)? {
+                    Some(GroundVal::Bits(bs, undefs)) => {
+                        if !undefs.is_zero() {
+                            panic!("Memory read address {} has undefined bits {}!", bs, undefs)
+                        }
+                        bs
+                    }
                     Some(GroundVal::Bool(_)) => panic!("Memory read address was a boolean?!"),
                     None => panic!("Arbitrary memory read address"),
                 };
                 let address: u64 = address.try_into()?;
-                let val = get_model_val(&mut model, value)?;
+                let val = get_model_val(&mut model, value, &undef)?;
                 match val {
-                    Some(GroundVal::Bits(val)) => {
+                    Some(GroundVal::Bits(val, undefs)) => {
+                        if !undefs.is_zero() {
+                            panic!("Memory location {} has undefined bits {}", address, undefs);
+                        }
                         let vals = val.to_le_bytes();
                         if 8 * *bytes == val.len() {
                             for i in 0..*bytes {
@@ -392,9 +430,12 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                 }
                 match tag_value {
                     Some(tag_value) => {
-                        let tag_val = get_model_val(&mut model, tag_value)?;
+                        let tag_val = get_model_val(&mut model, tag_value, &undef)?;
                         match tag_val {
-                            Some(GroundVal::Bits(v)) => {
+                            Some(GroundVal::Bits(v, undefs)) => {
+                                if !undefs.is_zero() {
+                                    panic!("Tag value at memory location {} is undefined", address);
+                                }
                                 let tag = !v.is_zero();
                                 if current_tag_memory.insert(address, Some(tag)).is_none() {
                                     initial_tag_memory.insert(address, tag);
@@ -408,15 +449,23 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                 }
             }
             Event::WriteMem { value: _, write_kind: _, address, data, bytes, tag_value, opts:_, region: _ } => {
-                let address = match get_model_val(&mut model, address)? {
-                    Some(GroundVal::Bits(bs)) => bs,
+                let address = match get_model_val(&mut model, address, &undef)? {
+                    Some(GroundVal::Bits(bs, undefs)) => {
+                        if !undefs.is_zero() {
+                            panic!("Write to memory location {} has undefined bits", bs);
+                        }
+                        bs
+                    }
                     Some(GroundVal::Bool(_)) => panic!("Memory write address was a boolean?!"),
                     None => panic!("Arbitrary memory write address"),
                 };
                 let address: u64 = address.try_into()?;
-                let val = get_model_val(&mut model, data)?;
+                let val = get_model_val(&mut model, data, &undef)?;
                 match val {
-                    Some(GroundVal::Bits(val)) => {
+                    Some(GroundVal::Bits(val, undefs)) => {
+                        if !undefs.is_zero() {
+                            panic!("Undefined bits {} written to location {}", undefs, address);
+                        }
                         let vals = val.to_le_bytes();
                         for i in 0..*bytes {
                             current_memory.insert(address + i as u64, Some(vals[i as usize]));
@@ -432,9 +481,12 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                 }
                 match tag_value {
                     Some(tag_value) => {
-                        let tag_val = get_model_val(&mut model, tag_value)?;
+                        let tag_val = get_model_val(&mut model, tag_value, &undef)?;
                         match tag_val {
-                            Some(GroundVal::Bits(val)) => {
+                            Some(GroundVal::Bits(val, undefs)) => {
+                                if !undefs.is_zero() {
+                                    panic!("Tag value written to memory location {} is undefined", address);
+                                }
                                 let tag = !val.is_zero();
                                 current_tag_memory.insert(address, Some(tag));
                             }

@@ -3,7 +3,7 @@
 (* Sizes are in bits, in particular because registers might not be
    made up of bytes. *)
 type requirement =
-  | Register of { name: string; size: int; value: Z.t }
+  | Register of { name: string; size: int; value: Z.t; mask: Z.t option }
   | Memory of { address: Z.t; size: int; value: Z.t; tag: bool option }
   | Tag of { address: Z.t; tag: bool }
 

@@ -21,11 +21,11 @@ use isla_lib::smt::smtlib::{Def, Exp, Ty};
 
 fn check_value<B: BV>(
     v: &Val<B>,
-    var_masks: &HashMap<Sym, B>,
+    var_undefs: &HashMap<Sym, B>,
 ) -> bool {
     use Val::*;
 
-    let check_var = |var| var_masks.get(var).map(|b| b.is_zero()).unwrap_or(true);
+    let check_var = |var| var_undefs.get(var).map(|b| b.is_zero()).unwrap_or(true);
     match v {
         Symbolic(var) => check_var(var),
         I64(_) | I128(_) | Bool(_) | Bits(_) | String(_) | Unit | Enum(_) | Poison => true,
@@ -33,27 +33,27 @@ fn check_value<B: BV>(
             BitsSegment::Symbolic(var) => check_var(var),
             BitsSegment::Concrete(_) => true,
         }),
-        Vector(vals) | List(vals) => vals.iter().all(|val| check_value(val, var_masks)),
-        Struct(vals) => vals.values().all(|val| check_value(val, var_masks)),
-        Ctor(_, val) => check_value(val, var_masks),
-        SymbolicCtor(var, vals) => check_var(var) && vals.values().all(|val| check_value(val, var_masks)),
+        Vector(vals) | List(vals) => vals.iter().all(|val| check_value(val, var_undefs)),
+        Struct(vals) => vals.values().all(|val| check_value(val, var_undefs)),
+        Ctor(_, val) => check_value(val, var_undefs),
+        SymbolicCtor(var, vals) => check_var(var) && vals.values().all(|val| check_value(val, var_undefs)),
         Ref(_) => panic!("Unsupported ref value"),
     }
 }
 
 fn examine_exp<B: BV>(
     exp: &Exp<Sym>,
-    var_masks: &HashMap<Sym, B>,
+    var_undefs: &HashMap<Sym, B>,
 ) -> Result<Option<B>, String> {
     use Exp::*;
 
-    let mask =
+    let undef =
         match exp {
-            Var(v) => var_masks.get(v).map(|b| b.clone()),
+            Var(v) => var_undefs.get(v).map(|b| b.clone()),
             Bits(_) | Bits64(_) | Enum(_) | Bool(_) => None,
             // We treat booleans as single bits
             Eq(e1, e2) | Neq(e1, e2) | And(e1, e2) | Or(e1, e2) => {
-                match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                     (None, None) => None,
                     (Some(m), None) | (None, Some(m)) => {
                         if m.is_zero() {
@@ -72,7 +72,7 @@ fn examine_exp<B: BV>(
                 }
             }
             Not(e) => {
-                if let Some(m) = examine_exp(e, var_masks)? {
+                if let Some(m) = examine_exp(e, var_undefs)? {
                     if m.is_zero() {
                         None
                     } else {
@@ -82,25 +82,28 @@ fn examine_exp<B: BV>(
                     None
                 }
             }
-            Bvnot(e) => examine_exp(e, var_masks)?,
-            // Bitwise operations with potential for removing undefined bits
+            Bvnot(e) => examine_exp(e, var_undefs)?,
+            // Bitwise operations with potential for removing
+            // undefined bits.  We sometimes need to do a little
+            // evaluation to get a concrete value for clearing/setting
+            // bits.
             Bvand(e1, e2) => {
-                match (e1.as_ref(), e2.as_ref()) {
+                match (e1.clone().eval(), e2.clone().eval()) {
                     (Bits64(bs), e) | (e, Bits64(bs)) => {
-                        if let Some(mask) = examine_exp(&e, var_masks)? {
-                            Some(mask & B::from_u64(bs.lower_u64()))
+                        if let Some(undef) = examine_exp(&e, var_undefs)? {
+                            Some(undef & B::from_u64(bs.lower_u64()))
                         } else {
                             None
                         }
                     }
                     _ => {
-                        if let Some(v1) = examine_exp(e1, var_masks)? {
-                            if let Some(v2) = examine_exp(e2, var_masks)? {
+                        if let Some(v1) = examine_exp(e1, var_undefs)? {
+                            if let Some(v2) = examine_exp(e2, var_undefs)? {
                                 Some(v1 | v2)
                             } else {
                                 Some(v1)
                             }
-                        } else if let Some(v2) = examine_exp(e2, var_masks)? {
+                        } else if let Some(v2) = examine_exp(e2, var_undefs)? {
                             Some(v2)
                         } else {
                             None
@@ -109,22 +112,22 @@ fn examine_exp<B: BV>(
                 }
             }
             Bvor(e1, e2) => {
-                match (e1.as_ref(), e2.as_ref()) {
+                match (e1.clone().eval(), e2.clone().eval()) {
                     (Bits64(bs), e) | (e, Bits64(bs)) => {
-                        if let Some(mask) = examine_exp(&e, var_masks)? {
-                            Some(mask & !B::from_u64(bs.lower_u64()))
+                        if let Some(undef) = examine_exp(&e, var_undefs)? {
+                            Some(undef & !B::from_u64(bs.lower_u64()))
                         } else {
                             None
                         }
                     }
                     _ => {
-                        if let Some(v1) = examine_exp(e1, var_masks)? {
-                            if let Some(v2) = examine_exp(e2, var_masks)? {
+                        if let Some(v1) = examine_exp(e1, var_undefs)? {
+                            if let Some(v2) = examine_exp(e2, var_undefs)? {
                                 Some(v1 | v2)
                             } else {
                                 Some(v1)
                             }
-                        } else if let Some(v2) = examine_exp(e2, var_masks)? {
+                        } else if let Some(v2) = examine_exp(e2, var_undefs)? {
                             Some(v2)
                         } else {
                             None
@@ -134,13 +137,13 @@ fn examine_exp<B: BV>(
             }
             // Other bitwise operations
             Bvxor(e1, e2) | Bvnand(e1, e2) | Bvnor(e1, e2) | Bvxnor(e1, e2) => {
-                if let Some(v1) = examine_exp(e1, var_masks)? {
-                    if let Some(v2) = examine_exp(e2, var_masks)? {
+                if let Some(v1) = examine_exp(e1, var_undefs)? {
+                    if let Some(v2) = examine_exp(e2, var_undefs)? {
                         Some(v1 | v2)
                     } else {
                         Some(v1)
                     }
-                } else if let Some(v2) = examine_exp(e2, var_masks)? {
+                } else if let Some(v2) = examine_exp(e2, var_undefs)? {
                     Some(v2)
                 } else {
                     None
@@ -149,10 +152,10 @@ fn examine_exp<B: BV>(
             // For these, return all potentially undefined if any arguments bits are.
             Bvadd(e1, e2) | Bvsub(e1, e2) | Bvmul(e1, e2) | Bvudiv(e1, e2) | Bvsdiv(e1, e2)
                 | Bvurem(e1, e2) | Bvsrem(e1, e2) | Bvsmod(e1, e2) => {
-                    match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                         (None, None) => None,
-                        (Some(mask), None) | (None, Some(mask)) => {
-                            if mask.is_zero() { None } else { Some(B::ones(mask.len())) }
+                        (Some(undef), None) | (None, Some(undef)) => {
+                            if undef.is_zero() { None } else { Some(B::ones(undef.len())) }
                         }
                         (Some(m1), Some(m2)) => {
                             if m1.is_zero() & m2.is_zero() { None } else { Some(B::ones(m1.len())) }
@@ -162,10 +165,10 @@ fn examine_exp<B: BV>(
             // Comparisons
             Bvult(e1, e2) | Bvslt(e1, e2) | Bvule(e1, e2) | Bvsle(e1, e2) | Bvuge(e1, e2) | Bvsge(e1, e2)
                 | Bvugt(e1, e2) | Bvsgt(e1, e2) => {
-                    match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                         (None, None) => None,
-                        (Some(mask), None) | (None, Some(mask)) => {
-                            if mask.is_zero() { None } else { return Err("Comparison on undefined bits".to_string()) }
+                        (Some(undef), None) | (None, Some(undef)) => {
+                            if undef.is_zero() { None } else { return Err("Comparison on undefined bits".to_string()) }
                         }
                         (Some(m1), Some(m2)) => {
                             if m1.is_zero() & m2.is_zero() { None } else { return Err("Comparison on undefined bits".to_string()) }
@@ -173,41 +176,41 @@ fn examine_exp<B: BV>(
                     }
                 }
             Extract(hi, lo, e) => {
-                if let Some(mask) = examine_exp(e, var_masks)? {
+                if let Some(undef) = examine_exp(e, var_undefs)? {
                     let len = hi - lo + 1;
-                    if let Some(new_mask) = mask.slice(*lo, len) {
-                        Some(new_mask)
+                    if let Some(new_undef) = undef.slice(*lo, len) {
+                        Some(new_undef)
                     } else {
-                        return Err(format!("Failed on Extract({}, {}, {:?} : {})", hi, lo, e, mask.len()))
+                        return Err(format!("Failed on Extract({}, {}, {:?} : {})", hi, lo, e, undef.len()))
                     }
                 } else {
                     None
                 }
             }
             ZeroExtend(extra, e) => {
-                if let Some(mask) = examine_exp(e, var_masks)? {
-                    Some(mask.zero_extend(mask.len() + *extra))
+                if let Some(undef) = examine_exp(e, var_undefs)? {
+                    Some(undef.zero_extend(undef.len() + *extra))
                 } else {
                     None
                 }
             }
             SignExtend(extra, e) => {
-                if let Some(mask) = examine_exp(e, var_masks)? {
+                if let Some(undef) = examine_exp(e, var_undefs)? {
                     // If the sign bit is undefined, the new ones will be
-                    Some(mask.sign_extend(mask.len() + *extra))
+                    Some(undef.sign_extend(undef.len() + *extra))
                 } else {
                     None
                 }
             }
             Bvshl(e1, e2) => {
                 if let Bits64(bs) = e2.as_ref() {
-                    if let Some(lhs) = examine_exp(e1, var_masks)? {
+                    if let Some(lhs) = examine_exp(e1, var_undefs)? {
                         Some(lhs.shl(B::from_u64(bs.lower_u64())))
                     } else {
                         None
                     }
                 } else {
-                    match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                         (None, None) => None,
                         (None, Some(rhs)) => if rhs.is_zero() { None } else { return Err("Shift by undefined amount".to_string()); },
                         (Some(lhs), _) => Some(B::ones(lhs.len())),
@@ -216,13 +219,13 @@ fn examine_exp<B: BV>(
             }
             Bvlshr(e1, e2) => {
                 if let Bits64(bs) = e2.as_ref() {
-                    if let Some(lhs) = examine_exp(e1, var_masks)? {
+                    if let Some(lhs) = examine_exp(e1, var_undefs)? {
                         Some(lhs.shr(B::from_u64(bs.lower_u64())))
                     } else {
                         None
                     }
                 } else {
-                    match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                         (None, None) => None,
                         (None, Some(rhs)) => if rhs.is_zero() { None } else { return Err("Shift by undefined amount".to_string()); },
                         (Some(lhs), _) => Some(B::ones(lhs.len())),
@@ -231,14 +234,14 @@ fn examine_exp<B: BV>(
             }
             Bvashr(e1, e2) => {
                 if let Bits64(_bs) = e2.as_ref() {
-                    if let Some(lhs) = examine_exp(e1, var_masks)? {
+                    if let Some(lhs) = examine_exp(e1, var_undefs)? {
                         // There isn't a built-in operator for this, not worth implementing
                         Some(B::ones(lhs.len()))
                     } else {
                         None
                     }
                 } else {
-                    match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                         (None, None) => None,
                         (None, Some(rhs)) => if rhs.is_zero() { None } else { return Err("Shift by undefined amount".to_string()); },
                         (Some(lhs), _) => Some(B::ones(lhs.len())),
@@ -246,7 +249,7 @@ fn examine_exp<B: BV>(
                 }
             }
             Concat(e1, e2) => {
-                match (examine_exp(e1, var_masks)?, examine_exp(e2, var_masks)?) {
+                match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
                     (None, None) => None,
                     (Some(m1), Some(m2)) => Some(m1.append(m2).ok_or("concat too long".to_string())?),
                     (None, Some(m)) | (Some(m), None) => {
@@ -259,24 +262,24 @@ fn examine_exp<B: BV>(
                 }
             }
             Ite(e1, e2, e3) => {
-                if let Some(m) = examine_exp(e1, var_masks)? {
+                if let Some(m) = examine_exp(e1, var_undefs)? {
                     if !m.is_zero() {
                         panic!("ite shouldn't depend on undef value");
                     }
                 };
-                match (examine_exp(e2, var_masks)?, examine_exp(e3, var_masks)?) {
+                match (examine_exp(e2, var_undefs)?, examine_exp(e3, var_undefs)?) {
                     (None, r) | (r, None) => r,
                     (Some(m2), Some(m3)) => Some(m2 | m3),
                 }
             }
             App(var, args) => {
-                if let Some(m) = var_masks.get(var) {
+                if let Some(m) = var_undefs.get(var) {
                     if !m.is_zero() {
                         return Err("App on pot undef".to_string());
                     }
                 }
                 for arg in args {
-                    if let Some(m) = examine_exp(arg, var_masks)? {
+                    if let Some(m) = examine_exp(arg, var_undefs)? {
                         if !m.is_zero() {
                             return Err("App arg on pot undef".to_string());
                         }
@@ -286,7 +289,7 @@ fn examine_exp<B: BV>(
             }
             Select(e1, e2) => {
                 for exp in [e1, e2] {
-                    if let Some(m) = examine_exp(exp, var_masks)? {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
                         if !m.is_zero() {
                             return Err("Select on pot undef".to_string());
                         }
@@ -296,7 +299,7 @@ fn examine_exp<B: BV>(
             }
             Store(e1, e2, e3) => {
                 for exp in [e1, e2, e3] {
-                    if let Some(m) = examine_exp(exp, var_masks)? {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
                         if !m.is_zero() {
                             return Err("Store on pot undef".to_string());
                         }
@@ -306,7 +309,7 @@ fn examine_exp<B: BV>(
             }
             Distinct(es) => {
                 for exp in es {
-                    if let Some(m) = examine_exp(exp, var_masks)? {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
                         if !m.is_zero() {
                             return Err("Distinct on pot undef".to_string());
                         }
@@ -316,12 +319,12 @@ fn examine_exp<B: BV>(
             }
             _ => panic!("Unsupported expression"),
         };
-    Ok(mask)
+    Ok(undef)
 }
 
 fn check_smt<B: BV>(
     def: &Def,
-    var_masks: &mut HashMap<Sym, B>,
+    var_undefs: &mut HashMap<Sym, B>,
 ) -> Result<(), String> {
     use Def::*;
     
@@ -329,14 +332,14 @@ fn check_smt<B: BV>(
         DeclareConst(var, ty) => {
             if let Ty::BitVec(size) = ty {
                 log!(log::VERBOSE, format!("{} is a bitvector of size {}", var, size));
-                var_masks.insert(*var, B::ones(*size));
+                var_undefs.insert(*var, B::ones(*size));
             }
         }
         DeclareFun(_, _, _) => (),
         DefineConst(var, exp) => {
-            if let Some(mask) = examine_exp(exp, var_masks)? {
-                log!(log::VERBOSE, format!("Var {} is {}", var, mask));
-                var_masks.insert(*var, mask);
+            if let Some(undef) = examine_exp(exp, var_undefs)? {
+                log!(log::VERBOSE, format!("Var {} is {}", var, undef));
+                var_undefs.insert(*var, undef);
             } else {
                 log!(log::VERBOSE, format!("Var {} is defined", var));
             }
@@ -346,7 +349,7 @@ fn check_smt<B: BV>(
             match lhs.as_ref() {
                 Exp::Var(v) => {
                     log!(log::VERBOSE, format!("Clearing {}", v));
-                    var_masks.remove(v);
+                    var_undefs.remove(v);
                 }
                 _ => panic!("var not a var?!"),
             }
@@ -357,26 +360,26 @@ fn check_smt<B: BV>(
     Ok(())
 }
 
-fn clear_unwritten<B: BV>(var_masks: &mut HashMap<Sym, B>, v: &Val<B>, written: &HashSet<Sym>) {
+fn clear_unwritten<B: BV>(var_undefs: &mut HashMap<Sym, B>, v: &Val<B>, written: &HashSet<Sym>) {
     use Val::*;
 
     match v {
-        Symbolic(var) => if !written.contains(var) { log!(log::VERBOSE, format!("Clearing {}", var)); var_masks.remove(var); },
+        Symbolic(var) => if !written.contains(var) { log!(log::VERBOSE, format!("Clearing {}", var)); var_undefs.remove(var); },
         I64(_) | I128(_) | Bool(_) | Bits(_) | String(_) | Unit | Enum(_) | Poison => (),
         MixedBits(segments) => {
             for segment in segments {
                 match segment {
-                    BitsSegment::Symbolic(var) => if !written.contains(var) { log!(log::VERBOSE, format!("Clearing {}", var)); var_masks.remove(var); },
+                    BitsSegment::Symbolic(var) => if !written.contains(var) { log!(log::VERBOSE, format!("Clearing {}", var)); var_undefs.remove(var); },
                     BitsSegment::Concrete(_) => (),
                 }
             }
         }
-        Vector(vals) | List(vals) => for val in vals { clear_unwritten(var_masks, val, written) },
-        Struct(vals) => for val in vals.values() { clear_unwritten(var_masks, val, written) },
-        Ctor(_, val) => clear_unwritten(var_masks, val, written),
+        Vector(vals) | List(vals) => for val in vals { clear_unwritten(var_undefs, val, written) },
+        Struct(vals) => for val in vals.values() { clear_unwritten(var_undefs, val, written) },
+        Ctor(_, val) => clear_unwritten(var_undefs, val, written),
         SymbolicCtor(var, vals) => {
-            if !written.contains(var) { var_masks.remove(var); };
-            for val in vals.values() { clear_unwritten(var_masks, val, written) }
+            if !written.contains(var) { var_undefs.remove(var); };
+            for val in vals.values() { clear_unwritten(var_undefs, val, written) }
         }
         Ref(_) => panic!("Unsupported ref value"),
     }
@@ -407,58 +410,58 @@ fn note_written<B: BV>(written: &mut HashSet<Sym>, v: &Val<B>) {
     }
 }
 
-pub fn check_undefined_bits<B: BV>(
-    events: &Vec<Event<B>>,
+pub fn check_undefined_bits<'a, B: BV, I: Iterator<Item = &'a Event<B>>>(
+    events: I,
     files: &[&str],
 ) -> Result<HashMap<Sym, B>, String> {
     use Event::*;
 
-    let mut var_masks: HashMap<Sym, B> = HashMap::new();
+    let mut var_undefs: HashMap<Sym, B> = HashMap::new();
     let mut written: HashSet<Sym> = HashSet::new();
 
-    for event in events.iter().rev() {
+    for event in events {
         match event {
-            Smt(def, _, _) => check_smt(&def, &mut var_masks)?,
+            Smt(def, _, _) => check_smt(&def, &mut var_undefs)?,
             Fork(_, assertion, _, loc) => {
                 log!(log::VERBOSE, format!("Fork at {} depends on {}", loc.location_string(files), assertion));
-                if !var_masks.get(assertion).map(|b| b.is_zero()).unwrap_or(true) {
+                if !var_undefs.get(assertion).map(|b| b.is_zero()).unwrap_or(true) {
                     return Err(format!("Fork depends on undefined bits at {}", loc.location_string(files)));
                 }
             }
             Function { .. } => (),
             Abstract { .. } | AssumeFun { .. } | UseFunAssumption { .. } => panic!("Unsupported event: {:?}", event),
             AssumeReg(_, _, _) | MarkReg { .. } | Branch { .. } | Cycle | Instr(_) | Assume(_) => (),
-            ReadReg(_, _, val) => clear_unwritten(&mut var_masks, val, &written),
+            ReadReg(_, _, val) => clear_unwritten(&mut var_undefs, val, &written),
             WriteReg(_, _, val) => note_written(&mut written, val),
             ReadMem {value, read_kind, address, bytes: _, tag_value: _, opts: _, region: _} => {
-                if !check_value(read_kind, &var_masks) {
+                if !check_value(read_kind, &var_undefs) {
                     return Err("Undefined bits used in read kind".to_string());
                 }
-                if !check_value(address, &var_masks) {
+                if !check_value(address, &var_undefs) {
                     return Err("Undefined bits used in read address".to_string());
                 }
-                clear_unwritten(&mut var_masks, value, &written);
+                clear_unwritten(&mut var_undefs, value, &written);
             }
             WriteMem {value, write_kind, address, data, bytes: _, tag_value, opts: _, region: _} => {
-                if !var_masks.get(value).map(|b| b.is_zero()).unwrap_or(true) {
+                if !var_undefs.get(value).map(|b| b.is_zero()).unwrap_or(true) {
                     return Err("Undefined bits written to memory".to_string());
                 };
-                if !check_value(write_kind, &var_masks) {
+                if !check_value(write_kind, &var_undefs) {
                     return Err("Undefined bits used in write_kind".to_string());
                 }
-                if !check_value(address, &var_masks) {
+                if !check_value(address, &var_undefs) {
                     return Err("Undefined bits used in write address".to_string());
                 }
-                if !check_value(data, &var_masks) {
+                if !check_value(data, &var_undefs) {
                     return Err("Undefined bits used in write data".to_string());
                 }
-                if !tag_value.as_ref().map(|v| check_value(v, &var_masks)).unwrap_or(true) {
+                if !tag_value.as_ref().map(|v| check_value(v, &var_undefs)).unwrap_or(true) {
                     return Err("Undefined bits used in write tag".to_string());
                 }
             }
         }
     }
-    Ok(var_masks)
+    Ok(var_undefs)
 }
 
 #[cfg(test)]

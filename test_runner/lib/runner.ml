@@ -72,7 +72,12 @@ let run_test verbose run_type regmap con test =
        let expected_bytes = if r.size mod 8 == 0 then r.size / 8 else 1 + r.size / 8 in
        let (sz,v) = Gdb.read_register con reg.Gdb.number in
        if sz <> expected_bytes then failwith (Printf.sprintf "Bytes receieved for register %s mismatch: %d received, %d expected" r.name (sz * 8) expected_bytes);
-       if Z.compare r.value v == 0
+       let ok =
+         match r.mask with
+         | None -> Z.compare r.value v == 0
+         | Some mask -> Z.compare (Z.logand r.value mask) (Z.logand v mask) == 0
+       in
+       if ok
        then None
        else Some (Printf.sprintf "Register %s mismatch: %s received, %s expected" r.name (Z.format "#x" v) (Z.format "#x" r.value))
     | Memory m ->

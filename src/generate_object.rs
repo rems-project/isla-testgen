@@ -220,7 +220,8 @@ fn get_nzcv<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), GroundVal<B>>)
     let mut value = 0u32;
     for (flag, bit) in &[("zN", 8), ("zZ", 4), ("zC", 2), ("zV", 1)] {
         match state.get(&("zPSTATE", vec![GVAccessor::Field(flag)])) {
-            Some(GroundVal::Bits(v)) => {
+            Some(GroundVal::Bits(v,m)) => {
+                assert!(m.is_zero());
                 mask |= bit;
                 if !v.is_zero() {
                     value |= bit;
@@ -249,7 +250,10 @@ fn get_numbered_registers<B: BV>(
         .filter_map(|i| {
             let name = if pad { format!("{}{:02}", prefix, i) } else { format!("{}{}", prefix, i) };
             match state.get(&(&name, vec![])) {
-                Some(GroundVal::Bits(bs)) => Some((i, *bs)),
+                Some(GroundVal::Bits(bs,m)) => {
+                    assert!(m.is_zero());
+                    Some((i, *bs))
+                }
                 Some(v) => panic!("Register {} was expected to be a bitvector, found {}", name, v),
                 None => None,
             }
@@ -262,7 +266,10 @@ fn get_vector_registers<B: BV>(state: &HashMap<(&str, Vec<GVAccessor<&str>>), Gr
         .filter_map(|i| {
             let name = "z_V";
             match state.get(&(name, vec![GVAccessor::Element(i)])) {
-                Some(GroundVal::Bits(bs)) => Some((i, *bs)),
+                Some(GroundVal::Bits(bs,m)) => {
+                    assert!(m.is_zero());
+                    Some((i, *bs))
+                }
                 Some(v) => panic!("Vector register {}.{} was expected to be a bitvector, found {}", name, i, v),
                 None => None,
             }
@@ -281,7 +288,10 @@ fn get_system_registers<B: BV, T: Target>(
             let zreg = zencode::encode(reg);
             if acc.is_empty() && T::is_gpr(&zreg).is_none() && reg != "_PC" {
                 match state.get(&(&zreg, vec![])) {
-                    Some(GroundVal::Bits(bs)) => Some((reg.clone(), *bs)),
+                    Some(GroundVal::Bits(bs,m)) => {
+                        assert!(m.is_zero());
+                        Some((reg.clone(), *bs))
+                    }
                     Some(v) => panic!("System register {} was expected to be a bitvector, found {}", reg, v),
                     None => None
                 }
@@ -295,7 +305,8 @@ fn get_system_registers<B: BV, T: Target>(
 fn get_exit_address<B: BV>(
     pre_post_states: &PrePostStates<B>,
 ) -> u64 {
-    if let Some(GroundVal::Bits(final_pc)) = pre_post_states.post_registers.get(&("z_PC", vec![])) {
+    if let Some(GroundVal::Bits(final_pc,m)) = pre_post_states.post_registers.get(&("z_PC", vec![])) {
+        assert!(m.is_zero());
         final_pc.lower_u64() + 4
     } else {
         panic!("Missing PC register in post state");
@@ -436,9 +447,11 @@ pub fn write_capability_data<B: BV, T: Target>(
             }
         }
     }
-    if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
+    if let Some(GroundVal::Bits(value,m)) = pre_post_states.pre_registers.get(&("zPCC", vec![])) {
+        assert!(m.is_zero());
         let mut value_except_tag = value.slice(0, 128).unwrap();
-        if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+        if let Some(GroundVal::Bits(bs,m)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+            assert!(m.is_zero());
             if !bs.is_zero() && !target.run_in_el0() {
                 value_except_tag = value_except_tag.add_i128(1);
             }
@@ -449,7 +462,8 @@ pub fn write_capability_data<B: BV, T: Target>(
         writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
         writeln!(asm_file, "\t.dword finish")?;
         writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
-        if let Some(GroundVal::Bits(value)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
+        if let Some(GroundVal::Bits(value,m)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
+            assert!(m.is_zero());
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
             if !value.slice(128, 1).unwrap().is_zero() {
@@ -694,7 +708,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t/* Set up flags and system registers */")?;
     if target.run_in_el0() {
 	let c64: u64 =
-	    if let Some(GroundVal::Bits(bs)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+	    if let Some(GroundVal::Bits(bs,m)) = pre_post_states.pre_registers.get(&("zPSTATE", vec![GVAccessor::Field("zC64")])) {
+                assert!(m.is_zero());
 		if !bs.is_zero() { 1 << 26 } else { 0 }
 	    } else {
 		0
@@ -743,7 +758,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     if target.has_capabilities() {
         writeln!(asm_file, "\tldr x{}, =pcc_return_ddc_capabilities", exit_reg)?;
         write_ldr_off(&mut asm_file, exit_reg, exit_reg, 0)?;
-        if let Some(GroundVal::Bits(_value)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
+        if let Some(GroundVal::Bits(_value,_m)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
             write_aldr_off(&mut asm_file, entry_reg, exit_reg, 3)?;
             write_msr_cap(&mut asm_file, &REG_DDC_EL3, entry_reg)?;
             writeln!(asm_file, "\tisb")?;

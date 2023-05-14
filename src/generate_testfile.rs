@@ -75,7 +75,8 @@ pub fn make_testfile<B: BV, T: Target>(
             let mut names: Vec<String> = vec![register];
             let mut accessors: Vec<String> = accessor.iter().map(|acc| acc.to_string()).collect();
             names.append(&mut accessors);
-            if let GroundVal::Bits(bits) = val {
+            if let GroundVal::Bits(bits, m) = val {
+                assert!(m.is_zero());
                 writeln!(test_file, "reg {} {} 0x{:x}", names.join("."), bits.len(), bits)?;
             } else {
                 println!("Bad value for {}: {:?}", names.join("."), val);
@@ -94,7 +95,10 @@ pub fn make_testfile<B: BV, T: Target>(
     }).collect();
     let post_pc =
         match pre_post_states.post_registers.get(&(&pc_reg, pc_acc)) {
-            Some(GroundVal::Bits(bits)) => bits,
+            Some(GroundVal::Bits(bits, m)) => {
+                assert!(m.is_zero());
+                bits
+            }
             Some(v) => panic!("Bad post-state PC: {:?}", v),
             None => panic!("Post-state PC missing"),
         };
@@ -127,8 +131,12 @@ pub fn make_testfile<B: BV, T: Target>(
             let mut names: Vec<String> = vec![register.to_string()];
             let mut accessors: Vec<String> = accessor.iter().map(|acc| acc.to_string()).collect();
             names.append(&mut accessors);
-            if let GroundVal::Bits(bits) = val {
-                writeln!(test_file, "reg {} {} 0x{:x}", names.join("."), bits.len(), bits)?;
+            if let GroundVal::Bits(bits, undefs) = val {
+                if undefs.is_zero() {
+                    writeln!(test_file, "reg {} {} 0x{:x}", names.join("."), bits.len(), bits)?;
+                } else {
+                    writeln!(test_file, "reg {} {} 0x{:x} mask 0x{:x}", names.join("."), bits.len(), bits, !*undefs)?;
+                }
             } else {
                 println!("Bad value for {}: {:?}", names.join("."), val);
             }
