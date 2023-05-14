@@ -46,12 +46,12 @@ let read_response con =
   let buf = Bytes.create 1024 in
   let bytes_read = Unix.recv con.fd buf 0 1024 [] in
   if con.verbose then Printf.eprintf "Read %d bytes\n%!" bytes_read;
-  if bytes_read = 0 then raise @@ ProtocolError "read_response: connection closed";
   let bytes_read =
     if bytes_read = 1 && Bytes.get buf 0 = '+'
     then Unix.recv con.fd buf 0 1024 []
     else bytes_read
   in
+  if bytes_read = 0 then raise @@ ProtocolError "read_response: connection closed";
   let start =
     if Bytes.get buf 0 = '+' then 1 else 0
   in
@@ -287,7 +287,9 @@ let continue_no_wait con addr_opt = cont_nw con "c" addr_opt
 let step con addr_opt = cont con "s" addr_opt
 let kill con =
   send_command con (start_command "k");
-  read_response con
+  try
+    read_response con
+  with ProtocolError "read_response: connection closed" -> Bytes.empty
 let detach con =
   send_command con (start_command "D");
   read_response con
