@@ -34,7 +34,7 @@ use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{Name, SharedState, Ty, Val};
 use isla_lib::primop_util::smt_value;
 use isla_lib::smt;
-use isla_lib::smt::{smtlib, Solver, Sym};
+use isla_lib::smt::{smtlib, Accessor, Event, Solver, Sym};
 use isla_lib::smt::smtlib::{bits64, Exp};
 use isla_lib::source_loc::SourceLoc;
 use isla_lib::zencode;
@@ -731,12 +731,28 @@ impl Target for X86 {
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
-        _shared_state: &SharedState<'ir, B>,
-        _frame: &mut LocalFrame<'ir, B>,
-        _solver: &mut Solver<B>,
+        shared_state: &SharedState<'ir, B>,
+        local_frame: &mut LocalFrame<'ir, B>,
+        solver: &mut Solver<B>,
         _init_pc: u64,
-        _regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
-    ) { }
+        regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
+    ) {
+        // Make some of the bits in rflag explicitly undefined
+        let rflags_var = regs.get(&(String::from("rflags"), vec![GVAccessor::Field(String::from("bits"))])).unwrap();
+        let rflags_name = shared_state.symtab.lookup("zrflags");
+        let bits_name = shared_state.symtab.lookup("zbits");
+        // Add a read to the trace to indicate that rflags_var is well-defined, but...
+        solver.add_event(Event::ReadReg(rflags_name, vec![Accessor::Field(bits_name)], Val::Symbolic(*rflags_var)));
+        // Put a new value in
+        let uninit_var = solver.declare_const(smtlib::Ty::BitVec(32), SourceLoc::unknown());
+        let new_var = solver.define_const(Exp::Bvor(Box::new(Exp::Var(*rflags_var)),
+                                                    Box::new(Exp::Bvand(
+                                                        Box::new(Exp::Bits64(B64::new(0xfffff3da, 32))),
+                                                        Box::new(Exp::Var(uninit_var))))),
+                                          SourceLoc::unknown());
+        let v = Val::Struct([(bits_name, Val::Symbolic(new_var))].iter().cloned().collect());
+        local_frame.regs_mut().assign(rflags_name, v, shared_state);
+    }
     fn post_instruction<'ir, B: BV>(
         &self,
         _shared_state: &SharedState<'ir, B>,
