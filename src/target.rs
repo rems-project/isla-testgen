@@ -777,8 +777,9 @@ impl Target for X86 {
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
     // Note that the final instruction is just a dummy because we only
-    // support gdb tests at the moment
+    // support gdb tests at the moment.  I used to use an INT3
+    // breakpoint, but that causes gdbserver to report the wrong RIP
     fn final_instruction<B: BV>(&self, _exit_register: u32) -> B {
-        B::new(0xcc, 8) // INT3 breakpoint
+        B::new(0x90, 8) // NOP
     }
 }
