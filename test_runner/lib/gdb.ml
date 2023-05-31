@@ -181,12 +181,15 @@ let fill_cache con =
      send_command con (start_command "g");
      let response = read_response con in
      check_bytes_or_error "reading registers" response;
-     Printf.printf "Filling reg cache using %d hex bytes\n%!" (Bytes.length response);
+     if con.verbose then
+       Printf.printf "Filling reg cache using %d hex bytes\n%!" (Bytes.length response);
      let next_reg (i,cache) reg =
        let bytesize = (reg.bitsize + 7) / 8 in
-       Printf.printf "Reg %s at offset %d with %d bytes" reg.name i bytesize;
+       if con.verbose then
+         Printf.printf "Reg %s at offset %d with %d bytes" reg.name i bytesize;
        let value = hex_to_Z_sub response i bytesize in
-       Printf.printf " value %s\n%!" (Z.format "%x" value);
+       if con.verbose then
+         Printf.printf " value %s\n%!" (Z.format "%x" value);
        (i + bytesize, (bytesize, value)::cache)
      in
      let _, rcache = List.fold_left next_reg (0,[]) con.registers in
