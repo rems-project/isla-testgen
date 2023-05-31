@@ -146,6 +146,21 @@ impl<'a, B:BV> Instr<'a, B> {
     fn small_description(self: &Instr<'a,B>) -> String {
         format!("{} {:?}", self.name, self.operands)
     }
+
+    fn has_f64_superscript(self: &Instr<'a,B>) -> bool {
+        let mut it = self.opcode_remainder.iter();
+        while let Some(item) = it.next() {
+            match item {
+                Sexp::Item(":SUPERSCRIPTS") => {
+                    if let Some(Sexp::Seq(items)) = it.next() {
+                        return items.iter().any(|x| matches!(x, Sexp::Item(":F64")));
+                    }
+                }
+                _ => (),
+            }
+        }
+        return false;
+    }
 }
 
 // TODO: should also filter on the mode
@@ -217,10 +232,11 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
     let ad_size_prefix = rng.gen_ratio(1,4);
     /* 3.6.1 Operand Size and Address Size in 64-Bit Mode */
     let operand_size =
-        match (rex, op_size_prefix) {
-            (Some(r), _) if r & 0b00001000 == 1 => 8,  // REX.W
-            (_, false) => 4,
-            (_, true) => 2,
+        match (instr.has_f64_superscript(), rex, op_size_prefix) {
+            (true, _, _) => 8,
+            (_, Some(r), _) if r & 0b00001000 != 0 => 8,  // REX.W
+            (_, _, false) => 4,
+            (_, _, true) => 2,
         };
     let address_size = if ad_size_prefix { 4 } else { 8 };
 
