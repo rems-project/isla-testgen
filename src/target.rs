@@ -752,6 +752,8 @@ impl Target for X86 {
                                           SourceLoc::unknown());
         let v = Val::Struct([(bits_name, Val::Symbolic(new_var))].iter().cloned().collect());
         local_frame.regs_mut().assign(rflags_name, v, shared_state);
+        // Add a write to the trace to make the undefined bits analysis know
+        solver.add_event(Event::WriteReg(rflags_name, vec![Accessor::Field(bits_name)], Val::Symbolic(new_var)));
     }
     fn post_instruction<'ir, B: BV>(
         &self,

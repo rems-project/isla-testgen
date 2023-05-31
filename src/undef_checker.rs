@@ -150,6 +150,13 @@ fn examine_exp<B: BV>(
                 }
             }
             // For these, return all potentially undefined if any arguments bits are.
+            Bvneg(e) => {
+                if let Some(undef) = examine_exp(e, var_undefs)? {
+                    if undef.is_zero() { None } else { Some(B::ones(undef.len())) }
+                } else {
+                    None
+                }
+            }
             Bvadd(e1, e2) | Bvsub(e1, e2) | Bvmul(e1, e2) | Bvudiv(e1, e2) | Bvsdiv(e1, e2)
                 | Bvurem(e1, e2) | Bvsrem(e1, e2) | Bvsmod(e1, e2) => {
                     match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
@@ -264,7 +271,7 @@ fn examine_exp<B: BV>(
             Ite(e1, e2, e3) => {
                 if let Some(m) = examine_exp(e1, var_undefs)? {
                     if !m.is_zero() {
-                        panic!("ite shouldn't depend on undef value");
+                        return Err("If-then-else depends on potentially undef value".to_string());
                     }
                 };
                 match (examine_exp(e2, var_undefs)?, examine_exp(e3, var_undefs)?) {
@@ -317,7 +324,56 @@ fn examine_exp<B: BV>(
                 }
                 None
             }
-            _ => panic!("Unsupported expression"),
+            FPConstant(_, _, _) => None,
+            FPRoundingMode(_) => None,
+            FPUnary(_, e) => {
+                if let Some(m) = examine_exp(e, var_undefs)? {
+                    if !m.is_zero() {
+                        return Err("FPUnary on potentially undefined bits".to_string());
+                    }
+                }
+                None
+            }
+            FPRoundingUnary(_, e1, e2) => {
+                for exp in [e1, e2] {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
+                        if !m.is_zero() {
+                            return Err("FPRoundingUnary on pot undef".to_string());
+                        }
+                    }
+                }
+                None
+            }
+            FPBinary(_, e1, e2) =>  {
+                for exp in [e1, e2] {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
+                        if !m.is_zero() {
+                            return Err("FPBinary on pot undef".to_string());
+                        }
+                    }
+                }
+                None
+            }
+            FPRoundingBinary(_, e1, e2, e3) =>  {
+                for exp in [e1, e2, e3] {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
+                        if !m.is_zero() {
+                            return Err("FPRoundingBinary on pot undef".to_string());
+                        }
+                    }
+                }
+                None
+            }
+            FPfma(e1, e2, e3, e4) =>  {
+                for exp in [e1, e2, e3, e4] {
+                    if let Some(m) = examine_exp(exp, var_undefs)? {
+                        if !m.is_zero() {
+                            return Err("FPfma on pot undef".to_string());
+                        }
+                    }
+                }
+                None
+            }
         };
     Ok(undef)
 }
@@ -488,6 +544,6 @@ mod tests {
             WriteMem { value, write_kind: Val::Unit, address: Val::Bits(B64::from_u64(0x1234)), data: Val::Symbolic(data), bytes: 4, tag_value: None, opts, region: "" },
         ];
             
-        assert!(check_undefined_bits(&events).is_err());
+        assert!(check_undefined_bits(events.iter(), &[]).is_err());
     }
 }
