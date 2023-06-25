@@ -168,6 +168,9 @@ fn undefined_or_unsupported<'a, B: BV>(instr: &Instr<'a, B>) -> bool {
     // Avoid segment stuff for now
     if instr.name == "far JMP" {
         true
+    // x86_sysret doesn't check appview, so manually disable it
+    } else if instr.name == "SYSRET" {
+        true
     } else if instr.name.starts_with(":") {
         true
     } else if instr.opcode_remainder.iter().any(|i| matches!(i, Sexp::Item(":FEAT"))) {
@@ -240,7 +243,7 @@ pub fn sample<'a,B:BV>(instructions: &[Instr<'a, B>]) -> (B, String) {
         };
     let address_size = if ad_size_prefix { 4 } else { 8 };
 
-    if operand_size == 8 && matches!(instr.name, "DIV" | "SHRD" | "SHLD") {
+    if operand_size == 8 && matches!(instr.name, "IDIV" | "DIV" | "SHRD" | "SHLD") {
         eprintln!("Skipping 64-bit instruction that requires unsupported 128-bit integer {}", instr.name);
         return sample(instructions);
     }
