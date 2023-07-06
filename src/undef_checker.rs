@@ -486,7 +486,7 @@ pub fn check_undefined_bits<'a, B: BV, I: Iterator<Item = &'a Event<B>>>(
             }
             Function { .. } => (),
             Abstract { .. } | AssumeFun { .. } | UseFunAssumption { .. } => panic!("Unsupported event: {:?}", event),
-            AssumeReg(_, _, _) | MarkReg { .. } | Branch { .. } | Cycle | Instr(_) | Assume(_) => (),
+            AssumeReg(_, _, _) | MarkReg { .. } | AddressAnnounce { .. } | Branch { .. } | Cycle | Instr(_) | Assume(_) => (),
             ReadReg(_, _, val) => clear_unwritten(&mut var_undefs, val, &written),
             WriteReg(_, _, val) => note_written(&mut written, val),
             ReadMem {value, read_kind, address, bytes: _, tag_value: _, opts: _, region: _} => {
