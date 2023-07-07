@@ -41,8 +41,27 @@ fn check_value<B: BV>(
     }
 }
 
+fn bits_to_bv<B: BV>(bits: &[bool]) -> B {
+    let mut bv = B::zeros(bits.len() as u32);
+    for (n, bit) in bits.iter().enumerate() {
+        if *bit {
+            bv = bv.set_slice(n as u32, B::BIT_ONE);
+        };
+    }
+    bv
+}
+
+fn not_zero<B: BV>(bo: Option<B>) -> Option<B> {
+    match bo {
+        None => None,
+        Some(b) => if b.is_zero() { None } else { Some(b) },
+    }
+}
+
 fn examine_exp<B: BV>(
     exp: &Exp<Sym>,
+    tcx: &HashMap<Sym, Ty>,
+    ftcx: &HashMap<Sym, (Vec<Ty>, Ty)>,
     var_undefs: &HashMap<Sym, B>,
 ) -> Result<Option<B>, String> {
     use Exp::*;
@@ -53,36 +72,21 @@ fn examine_exp<B: BV>(
             Bits(_) | Bits64(_) | Enum(_) | Bool(_) => None,
             // We treat booleans as single bits
             Eq(e1, e2) | Neq(e1, e2) | And(e1, e2) | Or(e1, e2) => {
-                match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                     (None, None) => None,
-                    (Some(m), None) | (None, Some(m)) => {
-                        if m.is_zero() {
-                            None
-                        } else {
-                            Some(B::ones(1))
-                        }
-                    }
-                    (Some(m1), Some(m2)) => {
-                        if m1.is_zero() & m2.is_zero() {
-                            None
-                        } else {
-                            Some(B::ones(1))
-                        }
+                    (Some(_m), _) | (_, Some(_m)) => {
+                        Some(B::ones(1))
                     }
                 }
             }
             Not(e) => {
-                if let Some(m) = examine_exp(e, var_undefs)? {
-                    if m.is_zero() {
-                        None
-                    } else {
-                        Some(B::ones(1))
-                    }
+                if let Some(_m) = not_zero(examine_exp(e, tcx, ftcx, var_undefs)?) {
+                    Some(B::ones(1))
                 } else {
                     None
                 }
             }
-            Bvnot(e) => examine_exp(e, var_undefs)?,
+            Bvnot(e) => examine_exp(e, tcx, ftcx, var_undefs)?,
             // Bitwise operations with potential for removing
             // undefined bits.  We sometimes need to do a little
             // evaluation to get a concrete value for clearing/setting
@@ -90,20 +94,27 @@ fn examine_exp<B: BV>(
             Bvand(e1, e2) => {
                 match (e1.clone().eval(), e2.clone().eval()) {
                     (Bits64(bs), e) | (e, Bits64(bs)) => {
-                        if let Some(undef) = examine_exp(&e, var_undefs)? {
+                        if let Some(undef) = examine_exp(&e, tcx, ftcx, var_undefs)? {
                             Some(undef & B::from_u64(bs.lower_u64()))
                         } else {
                             None
                         }
                     }
+                    (Bits(bs), e) | (e, Bits(bs)) => {
+                        if let Some(undef) = examine_exp(&e, tcx, ftcx, var_undefs)? {
+                            Some(undef & bits_to_bv(&bs))
+                        } else {
+                            None
+                        }
+                    }
                     _ => {
-                        if let Some(v1) = examine_exp(e1, var_undefs)? {
-                            if let Some(v2) = examine_exp(e2, var_undefs)? {
+                        if let Some(v1) = examine_exp(e1, tcx, ftcx, var_undefs)? {
+                            if let Some(v2) = examine_exp(e2, tcx, ftcx, var_undefs)? {
                                 Some(v1 | v2)
                             } else {
                                 Some(v1)
                             }
-                        } else if let Some(v2) = examine_exp(e2, var_undefs)? {
+                        } else if let Some(v2) = examine_exp(e2, tcx, ftcx, var_undefs)? {
                             Some(v2)
                         } else {
                             None
@@ -114,20 +125,27 @@ fn examine_exp<B: BV>(
             Bvor(e1, e2) => {
                 match (e1.clone().eval(), e2.clone().eval()) {
                     (Bits64(bs), e) | (e, Bits64(bs)) => {
-                        if let Some(undef) = examine_exp(&e, var_undefs)? {
+                        if let Some(undef) = examine_exp(&e, tcx, ftcx, var_undefs)? {
                             Some(undef & !B::from_u64(bs.lower_u64()))
                         } else {
                             None
                         }
                     }
+                    (Bits(bs), e) | (e, Bits(bs)) => {
+                        if let Some(undef) = examine_exp(&e, tcx, ftcx, var_undefs)? {
+                            Some(undef & !bits_to_bv::<B>(&bs))
+                        } else {
+                            None
+                        }
+                    }
                     _ => {
-                        if let Some(v1) = examine_exp(e1, var_undefs)? {
-                            if let Some(v2) = examine_exp(e2, var_undefs)? {
+                        if let Some(v1) = examine_exp(e1, tcx, ftcx, var_undefs)? {
+                            if let Some(v2) = examine_exp(e2, tcx, ftcx, var_undefs)? {
                                 Some(v1 | v2)
                             } else {
                                 Some(v1)
                             }
-                        } else if let Some(v2) = examine_exp(e2, var_undefs)? {
+                        } else if let Some(v2) = examine_exp(e2, tcx, ftcx, var_undefs)? {
                             Some(v2)
                         } else {
                             None
@@ -137,13 +155,13 @@ fn examine_exp<B: BV>(
             }
             // Other bitwise operations
             Bvxor(e1, e2) | Bvnand(e1, e2) | Bvnor(e1, e2) | Bvxnor(e1, e2) => {
-                if let Some(v1) = examine_exp(e1, var_undefs)? {
-                    if let Some(v2) = examine_exp(e2, var_undefs)? {
+                if let Some(v1) = examine_exp(e1, tcx, ftcx, var_undefs)? {
+                    if let Some(v2) = examine_exp(e2, tcx, ftcx, var_undefs)? {
                         Some(v1 | v2)
                     } else {
                         Some(v1)
                     }
-                } else if let Some(v2) = examine_exp(e2, var_undefs)? {
+                } else if let Some(v2) = examine_exp(e2, tcx, ftcx, var_undefs)? {
                     Some(v2)
                 } else {
                     None
@@ -151,39 +169,36 @@ fn examine_exp<B: BV>(
             }
             // For these, return all potentially undefined if any arguments bits are.
             Bvneg(e) => {
-                if let Some(undef) = examine_exp(e, var_undefs)? {
-                    if undef.is_zero() { None } else { Some(B::ones(undef.len())) }
+                if let Some(undef) = not_zero(examine_exp(e, tcx, ftcx, var_undefs)?) {
+                    Some(B::ones(undef.len()))
                 } else {
                     None
                 }
             }
             Bvadd(e1, e2) | Bvsub(e1, e2) | Bvmul(e1, e2) | Bvudiv(e1, e2) | Bvsdiv(e1, e2)
                 | Bvurem(e1, e2) | Bvsrem(e1, e2) | Bvsmod(e1, e2) => {
-                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                    match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                         (None, None) => None,
-                        (Some(undef), None) | (None, Some(undef)) => {
-                            if undef.is_zero() { None } else { Some(B::ones(undef.len())) }
-                        }
-                        (Some(m1), Some(m2)) => {
-                            if m1.is_zero() & m2.is_zero() { None } else { Some(B::ones(m1.len())) }
+                        (Some(undef), _) | (_, Some(undef)) => {
+                            Some(B::ones(undef.len()))
                         }
                     }
                 }
             // Comparisons
             Bvult(e1, e2) | Bvslt(e1, e2) | Bvule(e1, e2) | Bvsle(e1, e2) | Bvuge(e1, e2) | Bvsge(e1, e2)
                 | Bvugt(e1, e2) | Bvsgt(e1, e2) => {
-                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                    match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                         (None, None) => None,
                         (Some(undef), None) | (None, Some(undef)) => {
-                            if undef.is_zero() { None } else { return Err("Comparison on undefined bits".to_string()) }
+                            return Err(format!("Comparison on undefined bits {}", undef))
                         }
                         (Some(m1), Some(m2)) => {
-                            if m1.is_zero() & m2.is_zero() { None } else { return Err("Comparison on undefined bits".to_string()) }
+                            return Err(format!("Comparison on undefined bits {}", m1 | m2))
                         }
                     }
                 }
             Extract(hi, lo, e) => {
-                if let Some(undef) = examine_exp(e, var_undefs)? {
+                if let Some(undef) = not_zero(examine_exp(e, tcx, ftcx, var_undefs)?) {
                     let len = hi - lo + 1;
                     if let Some(new_undef) = undef.slice(*lo, len) {
                         Some(new_undef)
@@ -195,14 +210,14 @@ fn examine_exp<B: BV>(
                 }
             }
             ZeroExtend(extra, e) => {
-                if let Some(undef) = examine_exp(e, var_undefs)? {
+                if let Some(undef) = not_zero(examine_exp(e, tcx, ftcx, var_undefs)?) {
                     Some(undef.zero_extend(undef.len() + *extra))
                 } else {
                     None
                 }
             }
             SignExtend(extra, e) => {
-                if let Some(undef) = examine_exp(e, var_undefs)? {
+                if let Some(undef) = not_zero(examine_exp(e, tcx, ftcx, var_undefs)?) {
                     // If the sign bit is undefined, the new ones will be
                     Some(undef.sign_extend(undef.len() + *extra))
                 } else {
@@ -211,44 +226,44 @@ fn examine_exp<B: BV>(
             }
             Bvshl(e1, e2) => {
                 if let Bits64(bs) = e2.as_ref() {
-                    if let Some(lhs) = examine_exp(e1, var_undefs)? {
+                    if let Some(lhs) = not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?) {
                         Some(lhs.shl(B::from_u64(bs.lower_u64())))
                     } else {
                         None
                     }
                 } else {
-                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                    match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                         (None, None) => None,
-                        (None, Some(rhs)) => if rhs.is_zero() { None } else { return Err("Shift by undefined amount".to_string()); },
+                        (None, Some(_rhs)) => return Err("Shift by undefined amount".to_string()),
                         (Some(lhs), _) => Some(B::ones(lhs.len())),
                     }
                 }
             }
             Bvlshr(e1, e2) => {
                 if let Bits64(bs) = e2.as_ref() {
-                    if let Some(lhs) = examine_exp(e1, var_undefs)? {
+                    if let Some(lhs) = not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?) {
                         Some(lhs.shr(B::from_u64(bs.lower_u64())))
                     } else {
                         None
                     }
                 } else {
-                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                    match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                         (None, None) => None,
-                        (None, Some(rhs)) => if rhs.is_zero() { None } else { return Err("Shift by undefined amount".to_string()); },
+                        (None, Some(_rhs)) => return Err("Shift by undefined amount".to_string()),
                         (Some(lhs), _) => Some(B::ones(lhs.len())),
                     }
                 }
             }
             Bvashr(e1, e2) => {
                 if let Bits64(_bs) = e2.as_ref() {
-                    if let Some(lhs) = examine_exp(e1, var_undefs)? {
+                    if let Some(lhs) = not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?) {
                         // There isn't a built-in operator for this, not worth implementing
                         Some(B::ones(lhs.len()))
                     } else {
                         None
                     }
                 } else {
-                    match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                    match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                         (None, None) => None,
                         (None, Some(rhs)) => if rhs.is_zero() { None } else { return Err("Shift by undefined amount".to_string()); },
                         (Some(lhs), _) => Some(B::ones(lhs.len())),
@@ -256,25 +271,30 @@ fn examine_exp<B: BV>(
                 }
             }
             Concat(e1, e2) => {
-                match (examine_exp(e1, var_undefs)?, examine_exp(e2, var_undefs)?) {
+                match (not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?), not_zero(examine_exp(e2, tcx, ftcx, var_undefs)?)) {
                     (None, None) => None,
                     (Some(m1), Some(m2)) => Some(m1.append(m2).ok_or("concat too long".to_string())?),
-                    (None, Some(m)) | (Some(m), None) => {
-                        if m.is_zero() {
-                            None
+                    (None, Some(m)) => {
+                        if let Some(Ty::BitVec(sz)) = e1.infer(tcx, ftcx) {
+                            Some(B::zeros(sz).append(m).ok_or("concat too long".to_string())?)
                         } else {
-                            return Err("Concat partly defined on to unknown size".to_string()); // TODO: probably can't stand for this
+                            return Err("Unable to infer suitable type in Concat".to_string());
+                        }
+                    }
+                    (Some(m), None) => {
+                        if let Some(Ty::BitVec(sz)) = e2.infer(tcx, ftcx) {
+                            Some(m.append(B::zeros(sz)).ok_or("concat too long".to_string())?)
+                        } else {
+                            return Err("Unable to infer suitable type in Concat".to_string());
                         }
                     }
                 }
             }
             Ite(e1, e2, e3) => {
-                if let Some(m) = examine_exp(e1, var_undefs)? {
-                    if !m.is_zero() {
-                        return Err("If-then-else depends on potentially undef value".to_string());
-                    }
+                if let Some(_m) = not_zero(examine_exp(e1, tcx, ftcx, var_undefs)?) {
+                    return Err("If-then-else depends on potentially undef value".to_string());
                 };
-                match (examine_exp(e2, var_undefs)?, examine_exp(e3, var_undefs)?) {
+                match (examine_exp(e2, tcx, ftcx, var_undefs)?, examine_exp(e3, tcx, ftcx, var_undefs)?) {
                     (None, r) | (r, None) => r,
                     (Some(m2), Some(m3)) => Some(m2 | m3),
                 }
@@ -286,40 +306,32 @@ fn examine_exp<B: BV>(
                     }
                 }
                 for arg in args {
-                    if let Some(m) = examine_exp(arg, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("App arg on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(arg, tcx, ftcx, var_undefs)?) {
+                        return Err("App arg on pot undef".to_string());
                     }
                 }
                 None
             }
             Select(e1, e2) => {
                 for exp in [e1, e2] {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("Select on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("Select on pot undef".to_string());
                     }
                 }
                 None
             }
             Store(e1, e2, e3) => {
                 for exp in [e1, e2, e3] {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("Store on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("Store on pot undef".to_string());
                     }
                 }
                 None
             }
             Distinct(es) => {
                 for exp in es {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("Distinct on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("Distinct on pot undef".to_string());
                     }
                 }
                 None
@@ -327,49 +339,39 @@ fn examine_exp<B: BV>(
             FPConstant(_, _, _) => None,
             FPRoundingMode(_) => None,
             FPUnary(_, e) => {
-                if let Some(m) = examine_exp(e, var_undefs)? {
-                    if !m.is_zero() {
-                        return Err("FPUnary on potentially undefined bits".to_string());
-                    }
+                if let Some(_m) = not_zero(examine_exp(e, tcx, ftcx, var_undefs)?) {
+                    return Err("FPUnary on potentially undefined bits".to_string());
                 }
                 None
             }
             FPRoundingUnary(_, e1, e2) => {
                 for exp in [e1, e2] {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("FPRoundingUnary on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("FPRoundingUnary on pot undef".to_string());
                     }
                 }
                 None
             }
             FPBinary(_, e1, e2) =>  {
                 for exp in [e1, e2] {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("FPBinary on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("FPBinary on pot undef".to_string());
                     }
                 }
                 None
             }
             FPRoundingBinary(_, e1, e2, e3) =>  {
                 for exp in [e1, e2, e3] {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("FPRoundingBinary on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("FPRoundingBinary on pot undef".to_string());
                     }
                 }
                 None
             }
             FPfma(e1, e2, e3, e4) =>  {
                 for exp in [e1, e2, e3, e4] {
-                    if let Some(m) = examine_exp(exp, var_undefs)? {
-                        if !m.is_zero() {
-                            return Err("FPfma on pot undef".to_string());
-                        }
+                    if let Some(_m) = not_zero(examine_exp(exp, tcx, ftcx, var_undefs)?) {
+                        return Err("FPfma on pot undef".to_string());
                     }
                 }
                 None
@@ -380,20 +382,27 @@ fn examine_exp<B: BV>(
 
 fn check_smt<B: BV>(
     def: &Def,
+    tcx: &mut HashMap<Sym, Ty>,
+    ftcx: &mut HashMap<Sym, (Vec<Ty>, Ty)>,
     var_undefs: &mut HashMap<Sym, B>,
 ) -> Result<(), String> {
     use Def::*;
     
     match def {
         DeclareConst(var, ty) => {
+            tcx.insert(*var, ty.clone());
             if let Ty::BitVec(size) = ty {
                 log!(log::VERBOSE, format!("{} is a bitvector of size {}", var, size));
                 var_undefs.insert(*var, B::ones(*size));
             }
         }
-        DeclareFun(_, _, _) => (),
+        DeclareFun(v, arg_tys, result_ty) => {
+            ftcx.insert(*v, (arg_tys.clone(), result_ty.clone()));
+        }
         DefineConst(var, exp) => {
-            if let Some(undef) = examine_exp(exp, var_undefs)? {
+            let ty = exp.infer(tcx, ftcx).expect("SMT expression was badly-typed");
+            tcx.insert(*var, ty.clone());
+            if let Some(undef) = examine_exp(exp, tcx, ftcx, var_undefs)? {
                 log!(log::VERBOSE, format!("Var {} is {}", var, undef));
                 var_undefs.insert(*var, undef);
             } else {
@@ -472,12 +481,15 @@ pub fn check_undefined_bits<'a, B: BV, I: Iterator<Item = &'a Event<B>>>(
 ) -> Result<HashMap<Sym, B>, String> {
     use Event::*;
 
+    let mut tcx: HashMap<Sym, Ty> = HashMap::new();
+    let mut ftcx: HashMap<Sym, (Vec<Ty>, Ty)> = HashMap::new();
+
     let mut var_undefs: HashMap<Sym, B> = HashMap::new();
     let mut written: HashSet<Sym> = HashSet::new();
 
     for event in events {
         match event {
-            Smt(def, _, _) => check_smt(&def, &mut var_undefs)?,
+            Smt(def, _, _) => check_smt(&def, &mut tcx, &mut ftcx, &mut var_undefs).map_err(|s| format!("{}: {:?}", s, event))?,
             Fork(_, assertion, _, loc) => {
                 log!(log::VERBOSE, format!("Fork at {} depends on {}", loc.location_string(files), assertion));
                 if !var_undefs.get(assertion).map(|b| b.is_zero()).unwrap_or(true) {
