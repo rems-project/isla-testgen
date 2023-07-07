@@ -838,6 +838,19 @@ pub fn make_asm_files<B: BV, T: Target>(
             if reg == "ESR_EL1" {
                 let value = value.lower_u64();
                 write_cap_esr_check(&mut asm_file, value, entry_reg, exit_reg)?;
+            } else if reg == "SP_EL3" {
+                if target.has_capabilities() {
+                    writeln!(asm_file, "\tldr x{}, =final_SP_EL3_value", entry_reg)?;
+                    write_ldr_off(&mut asm_file, entry_reg, entry_reg, 0)?;
+                    write_cpy(&mut asm_file, exit_reg, 31)?;
+                    write_chkeq(&mut asm_file, entry_reg, exit_reg)?;
+                    writeln!(asm_file, "\tb.ne comparison_fail")?;
+                } else {
+                    writeln!(asm_file, "\tldr x{}, ={:#x}", entry_reg, value.lower_u64())?;
+                    writeln!(asm_file, "\tmov x{}, sp", entry_reg)?;
+                    writeln!(asm_file, "\tcmp x{}, x{}", entry_reg, exit_reg)?;
+                    writeln!(asm_file, "\tb.ne comparison_fail")?;
+                }
             } else {
                 let actual_reg = if reg == "PCC" {
                     assert!(target.run_in_el0());
