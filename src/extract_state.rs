@@ -269,6 +269,23 @@ where
     m
 }
 
+fn extract_mentioned_registers<B:BV>(events: &[Event<B>]) -> HashSet<Name> {
+    let mut mentioned_registers: HashSet<Name> = HashSet::new();
+    let mut post_init = false;
+    for event in events {
+        match event {
+            Event::ReadMem { .. } if event.is_ifetch() => post_init = true,
+            Event::ReadReg(reg, _, _) | Event::WriteReg(reg, _, _) => {
+                if post_init {
+                    mentioned_registers.insert(*reg);
+                }
+            }
+            _ => (),
+        }
+    }
+    mentioned_registers
+}
+
 /// Extract pre- and post-states from the event trace and the model.
 /// The first read after initialisation is recorded for the pre-state:
 /// if it was concrete during the symbolic execution then it was
@@ -363,22 +380,26 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     let mut initial_registers: HashMap<(Name, Vec<GVAccessor<Name>>), GroundVal<B>> = HashMap::new();
     let mut current_registers: HashMap<(Name, Vec<GVAccessor<Name>>), Option<GroundVal<B>>> = HashMap::new();
 
+    let mentioned_registers: HashSet<Name> = extract_mentioned_registers(&events);
+
     // Ensure that system registers that are essential for the harness are included even
     // if they don't appear in the event trace.
     let mut missing: HashSet<(String, Vec<GVAccessor<String>>)> = target.essential_regs().drain(..).collect();
 
     for regacc in target.regs() {
-        if let Some(_name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
-            if let Some(sym) = initial_register_map.get(&regacc) {
-                if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym), &undef)? {
-                    missing.remove(&regacc);
-                    initial_registers.insert(regacc_int(shared_state, &regacc), ground_val);
-                }
-            } else {
+        if let Some(name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
+            if missing.contains(&regacc) || mentioned_registers.contains(&name) {
+                if let Some(sym) = initial_register_map.get(&regacc) {
+                    if let Some(ground_val) = get_model_val(&mut model, &Val::Symbolic(*sym), &undef)? {
+                        missing.remove(&regacc);
+                        initial_registers.insert(regacc_int(shared_state, &regacc), ground_val);
+                    }
+                } else {
                     return Err(ExecError::Unreachable(format!("Register {:?} was not initialised", regacc)));
+                }
             }
         } else {
-            panic!("Missing initial system register: {}", regacc.0);
+            panic!("Missing initial register: {}", regacc.0);
         }
     }
     if !missing.is_empty() {
@@ -387,7 +408,13 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                                   missing.join(", "))));
     }
     for (regacc, val) in final_register_vals {
-        current_registers.insert(regacc_int(shared_state, &regacc), get_model_val(&mut model, &val, &undef)?);
+        if let Some(name) = shared_state.symtab.get(&zencode::encode(&regacc.0)) {
+            if mentioned_registers.contains(&name) {
+                current_registers.insert(regacc_int(shared_state, &regacc), get_model_val(&mut model, &val, &undef)?);
+            }
+        } else {
+            panic!("Missing final register: {}", regacc.0);
+        }
     }
 
     let mut init_complete = false;
