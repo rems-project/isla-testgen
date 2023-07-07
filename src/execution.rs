@@ -782,7 +782,11 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                             let s = ex_val.to_string(&shared_state.symtab);
                             collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
                         } else {
-                            if let Err(m) = check_undefined_bits(events.iter().rev(), shared_state.symtab.files()) {
+                            if let Err(m) =
+                                if target.supports_undef_checker() {
+                                    check_undefined_bits(events.iter().rev(), shared_state.symtab.files())
+                                } else { Ok(HashMap::new()) }
+                            {
                                 collected.push((Err(m), events))
                             } else {
                                 match val {

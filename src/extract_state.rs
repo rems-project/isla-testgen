@@ -333,7 +333,12 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 
     let mut events = solver.trace().to_vec();
     let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-    let undef = check_undefined_bits(events.iter(), shared_state.symtab.files()).map_err(|m| ExecError::Unreachable(m))?;
+    let undef =
+        if target.supports_undef_checker() {
+            check_undefined_bits(events.iter(), shared_state.symtab.files()).map_err(|m| ExecError::Unreachable(m))?
+        } else {
+            HashMap::new()
+        };
 
     let mut instruction_locations = HashMap::new();
     for (pc_val, description) in instruction_pc_vals {

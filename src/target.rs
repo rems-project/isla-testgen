@@ -115,6 +115,11 @@ where
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
     fn final_instruction<B: BV>(&self, exit_register: u32) -> B;
+    // The undefined bits checker has some limitations (in particular,
+    // it can't reason about bitvectors that are partially initialised
+    // by a runtime-determined anount, which happens in the Morello
+    // specification's capability functions)
+    fn supports_undef_checker(&self) -> bool;
 }
 
 pub struct Aarch64 {}
@@ -221,6 +226,10 @@ impl Target for Aarch64 {
     }
     fn final_instruction<B: BV>(&self, exit_register: u32) -> B {
         B::from_u32(0xd61f0000 | (exit_register << 5)) // br exit_register
+    }
+    // TODO: try it, might work...
+    fn supports_undef_checker(&self) -> bool {
+        false
     }
 }
 
@@ -589,6 +598,11 @@ impl Target for Morello {
 	    EL0 => 0xd4000001, // SVC 0
         })
     }
+    // CapGetBounds initialises base/limit in stages, and the amount
+    // of initialisation depends on the exponent.
+    fn supports_undef_checker(&self) -> bool {
+        false
+    }
 }
 
 pub enum X86Style { Plain, Cap }
@@ -799,5 +813,8 @@ impl Target for X86 {
     // breakpoint, but that causes gdbserver to report the wrong RIP
     fn final_instruction<B: BV>(&self, _exit_register: u32) -> B {
         B::new(0x90, 8) // NOP
+    }
+    fn supports_undef_checker(&self) -> bool {
+        true
     }
 }
