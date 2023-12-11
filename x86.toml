@@ -1,0 +1,49 @@
+pc = "rip"
+
+ifetch = "Read_ifetch"
+
+read_exclusives = []
+write_exclusives = []
+
+# The assembler is used for assembling the code in litmus tests. We
+# assume it takes arguments like GNU as.
+assembler = "x86_64-linux-gnu-as"
+objdump = "x86_64-linux-gnu-objdump"
+linker = "x86_64-linux-gnu-ld"
+
+[mmu]
+page_table_base = "0x300000"
+page_size = "4096"
+s2_page_table_base = "0x300000"
+s2_page_size = "4096"
+
+# This section contains the base address for loading the code for each
+# thread in a litmus test, and the stride which is the distance
+# between each thread in bytes. The overall range for thread memory is
+# the half-open range [base,top)"
+[threads]
+base = "0x400000"
+top = "0x500000"
+stride = "0x10000"
+
+[symbolic_addrs]
+base = "0x600000"
+top = "0x600000"
+stride = "0x10"
+
+[registers]
+ignore = []
+
+[registers.defaults]
+log_register_writes = false
+
+# A map from register names in the litmus to Sail register specifiers
+# (roughtly corresponding to l-expressions in Sail, i.e. subscripting
+# R[n] and field accesses R.field are allowed.)
+[registers.renames]
+
+[reads]
+
+[writes]
+
+[cache_ops]
