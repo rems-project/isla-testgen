@@ -336,7 +336,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         }
     }
 
-    match solver.check_sat() {
+    match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => (),
         SmtResult::Unsat => return Err(ExecError::Z3Error(String::from("Unsatisfiable at recheck"))),
         SmtResult::Unknown => return Err(ExecError::Z3Unknown),
@@ -511,6 +511,9 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                         }
                     }
                 }
+                // Even if a tag value is given, some models always include a false value for ordinary
+                // writes, so we need to align the address.
+                let tag_address = address & ! T::capability_address_mask();
                 match tag_value {
                     Some(tag_value) => {
                         let tag_val = get_model_val(&mut model, tag_value, &undef)?;
@@ -520,17 +523,17 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
                                     panic!("Tag value written to memory location {} is undefined", address);
                                 }
                                 let tag = !val.is_zero();
-                                current_tag_memory.insert(address, Some(tag));
+                                current_tag_memory.insert(tag_address, Some(tag));
                             }
                             Some(GroundVal::Bool(_)) => panic!("Tag memory write has wrong type (bool)"),
                             None => {
                                 println!("Ambivalent tag write to {:x}", address);
-                                current_tag_memory.insert(address, None);
+                                current_tag_memory.insert(tag_address, None);
                             }
                         }
                     }
                     None => {
-                        current_tag_memory.insert(address & 0xffff_ffff_ffff_fff0u64, Some(false));
+                        current_tag_memory.insert(tag_address, Some(false));
                     }
                 }
             }

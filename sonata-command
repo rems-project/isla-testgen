@@ -1,0 +1,17 @@
+
+target/release/isla-testgen -a cheriot -T 1 -C sonata.toml \
+  -A ../cheriot-sail/generated_definitions/riscv_model_RV32.ir \
+  --max-retries 20 \
+  -L bool_to_bits -L bool_to_bit -L bit_to_bool -L clearTagIf -L capToEncCap \
+  -L encCapabilityToCapability -L getCapBoundsBits -L inCapBounds -L setCapBounds \
+  -L isla_init_cap_property \
+  -k mmio_write -k mmio_read \
+  --debug fmlp \
+  --sparse \
+  --harness-code 0x00100080 --harness-data 0x00100880 --uart 0x80100000 \
+  --code-region 0x00101000-0x00101fff --memory-region 0x00102000-0x00102fff \
+  --memory-region 0x30000000-0x300007ff --no-tags-in 0x30000000-0x300007ff \
+  --generator '../sail-riscv-test-generation/main.native -restrict_registers -allow_custom_2' \
+  _ _ _ _ _
+# \
+# -n 25 -o $OUT/test- 2>&1 | tee $OUT/log

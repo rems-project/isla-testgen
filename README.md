@@ -19,12 +19,112 @@ acknowledgements.  In addition, Arm provided valuable cooperation
 during the development of this software and the testing of the Morello
 specifications.
 
-*NB*: the master branch is currently rather unstable, the
-`morello-public` tag matches the instructions below.  The HEAD will
-require more recent versions of the dependencies, and is likely to be
-much buggier.
+## Building tests for CHERIoT
 
-## Building and generating tests
+This is the most recently used target for testing, and generates tests
+that can be run on the Sonata system under verilator simulation.  The
+tests finish by sending OK, FAILED, or BAD TEST (if it failed to
+construct a capability during setup), then go into a loop.  So when
+running the tests set a limit to the number of cycles to execute.
+
+Several pieces of software are required to build the test generator, a
+version of the CHERIoT model that's mildly adapted for it, and a
+random instruction generator:
+
+1. Ensure that you have
+   [Rust](https://www.rust-lang.org/learn/get-started) installed,
+   including its "cargo" package manager, and OCaml's
+   [opam](https://opam.ocaml.org/) package manager.  These
+   instructions were tested with OCaml 5.2.1.
+   
+   You also need a copy of Z3.  One can be installed using opam if
+   necessary.
+   
+   CHERIoT LLVM should also be built and in your `PATH`.
+
+2. Install [Sail](https://github.com/rems-project/sail).  This was tested
+   with an in-development version rather than a release, for
+   compatibility clone the repository at commit `bfdeb8cc` and install
+   it locally with
+   ```
+   opam install .
+   ```
+
+3. Clone the test generator repository, including the Isla submodule:
+   ```
+   git clone --recurse-submodules https://github.com/rems-project/isla-testgen.git
+   cd isla-testgen
+   cargo build --release
+   cd isla/isla-sail
+   make
+   cd ../../..
+   ```
+
+4. Clone and build the adapted CHERIoT model:
+   ```
+   PATH=$PATH:`pwd`/isla-testgen/isla/isla-sail
+   git clone https://github.com/bacam/2025-lowrisc-cheriot-sail.git cheriot-sail
+   cd cheriot-sail
+   make generated_definitions/riscv_model_RV32.ir
+   ```
+   
+5. Clone and build the random instruction generator:
+   ```
+   git clone https://github.com/rems-project/sail-riscv-test-generation.git
+   cd sail-riscv-test-generation
+   make
+   ```
+
+7. The file `sonata-command` contains an example command line
+   to generate a single test with five randomly chosen instructions, and can be
+   run with `bash`.  There are a couple of commented out lines at the
+   bottom which would generate a set of larger tests.
+   
+   A set of tests for all of the feasible paths of one instruction
+   given by `--all-paths-for` and the number of the instruction in the
+   sequence (starting at 0).
+
+### Running the Sail C simulator with coverage
+
+1. Build the coverage support tool and library for Sail
+
+  ```
+  cd sail/sailcov
+  make
+  cd `sail --dir`/lib/coverage
+  cargo build --release
+  ```
+
+2. Build the C simulator with coverage support
+
+  ```
+  cd cheriot-sail
+  make csim SAILCOV=yes
+  ```
+
+3. Run some tests (adjusting the paths as necessary)
+
+  ```
+  for f in *.elf; do .../cheriot-sail/c_emulator/cheriot_sim -l 1000 $f; done
+  ```
+
+  The raw coverage information will be appended to `sail_coverage`.
+
+4. Generate a coverage report in the current directory.
+
+  ```
+  .../sail/sailcov/sailcov -t sail_coverage -a .../cheriot-sail/generated_definitions/c/all_branches .../cheriot-sail/src/*.sail .../cheriot-sail/sail-riscv/model/*.sail --index index --colour-by-count
+  ```
+  Multiple `-t` options can be given to combine several `sail_coverage` files.
+
+## Building tests for Morello
+
+The `morello-public` tag matches the instructions below, but uses
+quite old versions of the software.  The HEAD will require more recent
+versions of the dependencies, but might have suffered a little due to
+work on other targets.
+
+### Building and generating tests
 
 Several pieces of software are required to build the test generator, a
 version of the Morello model that's adapted for it, and a file with
@@ -41,7 +141,7 @@ the instruction encodings:
 
 2. Install [Sail](https://github.com/rems-project/sail).  Isla
    currently uses an in-development version rather than a release, for
-   compatibility clone the repository at commit `35566375` and install
+   compatibility clone the repository at commit `e5bbe70f` and install
    it locally with
    ```
    opam install .

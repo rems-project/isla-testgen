@@ -38,7 +38,7 @@ use std::error::Error;
 use std::fs::File;
 use std::num::ParseIntError;
 use std::ops::Range;
-use std::process::exit;
+use std::process::{Command,exit};
 
 // TODO: allow B64 or B129
 use isla_lib::bitvector::{b129::B129, BV};
@@ -53,7 +53,6 @@ use isla_testgen::acl2_insts_parser;
 use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
 use isla_testgen::extract_state;
-use isla_testgen::generate_object;
 use isla_testgen::generate_testfile;
 use isla_testgen::target;
 use isla_testgen::target::Target;
@@ -103,6 +102,7 @@ fn parse_instruction_masks(little_endian: bool, args: &[String]) -> Vec<(&str, O
 enum Encodings<'a, B:BV> {
     ASL(asl_tag_files::Encodings),
     ACL2(Vec<acl2_insts::Instr<'a, B>>),
+    External(String, Vec<String>),
 }
 
 fn instruction_opcode<B: BV>(
@@ -121,6 +121,19 @@ fn instruction_opcode<B: BV>(
                     (B::from_u32(op), d)
                 }
                 ACL2(encodings) => acl2_insts::sample(encodings),
+                External(cmd, args) => {
+                    let out = Command::new(cmd)
+                        .args(args)
+                        .output()
+                        .expect("Failed to run instruction generator");
+                    let mut s = String::from_utf8(out.stdout).expect("Bad string from instruction generator");
+                    match s.find(' ') {
+                        None => (B::from_str(&s).expect(&format!("Bad instruction {}", s)),s),
+                        Some(i) => {
+                            let description = s.split_off(i+1);
+                            (B::from_str(&s[..i]).expect(&format!("Bad instruction {}", s)), description)},
+                    }
+                }
             };
         println!("Instruction {:#010x}: {}", opcode, description);
         (opcode, true, description)
@@ -163,6 +176,7 @@ fn isla_main() -> i32 {
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("", "acl2-insts", "parse instruction encodings in ACL2 format", "<file>");
+    opts.optopt("", "generator", "execute command to generate an instruction", "<command>");
     opts.optopt("o", "output", "base name for output files", "<file>");
     opts.optopt("n", "number-gens", "number of tests to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
@@ -179,6 +193,10 @@ fn isla_main() -> i32 {
     opts.optmulti("", "memory-region", "Add a memory region (overriding the default)", "<start[-end]>");
     opts.optopt("", "code-region", "Specify the region of memory to be used for code", "<start[-end]>");
     opts.optflag("", "sparse", "Omit untouched initial memory in test");
+    opts.optopt("", "harness-code", "Start address for test harness code", "<start>");
+    opts.optopt("", "harness-data", "Start address for test harness data", "<start>");
+    opts.optopt("", "uart", "Address for basic UART", "<address>");
+    opts.optopt("", "no-tags-in", "Tags always read/write false in region", "<start-end>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -204,6 +222,7 @@ fn isla_main() -> i32 {
         "morello-aarch64" => testgen_main(target::Morello { style: AArch64Compatible, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         "x86" => testgen_main(target::X86 { style: X86Style::Plain }, hasher, opts, matches, arch),
         "c86" => testgen_main(target::X86 { style: X86Style::Cap }, hasher, opts, matches, arch),
+        "cheriot" => testgen_main(target::CHERIoT {}, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1
@@ -238,7 +257,7 @@ fn testgen_main<T: Target, B: BV>(
     arch: opts::Architecture<B>,
 ) -> i32 {
     // TODO: use source_path
-    let CommonOpts { num_threads, mut arch, symtab, isa_config, source_path: _ } =
+    let CommonOpts { num_threads, mut arch, symtab, isa_config, type_info, source_path: _ } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
     let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");
@@ -248,6 +267,7 @@ fn testgen_main<T: Target, B: BV>(
 
     let tag_files = matches.opt_strs("tag-file");
     let acl2_file = matches.opt_str("acl2-insts");
+    let generator = matches.opt_str("generator");
     let encodings =
         if let Some(file_name) = acl2_file {
             let file = File::open(&file_name).unwrap_or_else(|err| panic!("Unable to open tag file {}: {}", file_name, err));
@@ -255,6 +275,10 @@ fn testgen_main<T: Target, B: BV>(
             let sexp = acl2_insts_parser::SexpParser::new().parse(Box::leak(Box::new(input))).unwrap();
             let instrs = acl2_insts::parse_instrs::<B>(Box::leak(Box::new(sexp))).unwrap();
             Encodings::ACL2(instrs)
+        } else if let Some(command) = generator {
+            let mut words = command.split_whitespace();
+            let program = words.next().expect("Instruction generator command cannot be empty");
+            Encodings::External(program.to_string(), words.map(|w| w.to_string()).collect())
         } else {
             let encodings = if tag_files.is_empty() {
                 asl_tag_files::Encodings::default()
@@ -267,13 +291,13 @@ fn testgen_main<T: Target, B: BV>(
     let register_types: HashMap<Name, Ty<Name>> = arch
         .iter()
         .filter_map(|d| match d {
-            Def::Register(reg, ty) => Some((*reg, ty.clone())),
+            Def::Register(reg, ty, _) => Some((*reg, ty.clone())),
             _ => None,
         })
         .collect();
 
     let Initialized { regs, mut lets, shared_state } =
-        initialize_architecture(&mut arch, symtab, &isa_config, AssertionMode::Optimistic);
+        initialize_architecture(&mut arch, symtab, type_info, &isa_config, AssertionMode::Optimistic, true);
 
     let regions = matches.opt_strs("memory-region");
     let symbolic_regions: Vec<Range<u64>> =
@@ -286,11 +310,16 @@ fn testgen_main<T: Target, B: BV>(
         match matches.opt_str("code-region") {
             Some(s) => vec![range_parse(&s)],
             None => {
-                let init_pc: u64 = target.init_pc();
+                let init_pc: u64 = target.default_init_pc();
                 vec![init_pc..init_pc + 0x10000]
             }
         };
+    let no_tags_in_regions : Vec<Range<u64>> = matches.opt_strs("no-tags-in").iter().map(|s| range_parse(&s)).collect();
     let init_pc = symbolic_code_regions[0].start;
+
+    let harness_code = matches.opt_str("harness-code").map(|s| u64_parse(&s).expect("Bad harness code start address"));
+    let harness_data = matches.opt_str("harness-data").map(|s| u64_parse(&s).expect("Bad harness data start address"));
+    let uart = matches.opt_str("uart").map(|s| u64_parse(&s).expect("Bad UART address"));
 
     // NB: The current aarch64 model needs this, however we explicitly
     // override the PC when setting up the registers.
@@ -323,7 +352,7 @@ fn testgen_main<T: Target, B: BV>(
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory, &target.init_function());
     let (frame, checkpoint, register_map) =
-        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
+        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target, &no_tags_in_regions);
 
     let base_name = &matches.opt_str("output").unwrap_or(String::from("test"));
     let register_bias = !&matches.opt_present("uniform-registers");
@@ -345,11 +374,15 @@ fn testgen_main<T: Target, B: BV>(
         register_types: &register_types,
         symbolic_regions: &symbolic_regions,
         symbolic_code_regions: &symbolic_code_regions,
+        no_tags_in_regions: &no_tags_in_regions,
         assertion_reports: matches.opt_str("assertion-reports"),
         generate_testfile: matches.opt_present("test-file"),
         sparse: matches.opt_present("sparse"),
         init_pc,
         register_map,
+        harness_code,
+        harness_data,
+        uart,
     };
 
     let all_paths_for = matches.opt_get("all-paths-for").expect("Bad all-paths-for argument");
@@ -423,11 +456,15 @@ struct TestConf<'ir, B: BV> {
     register_types: &'ir HashMap<Name, Ty<Name>>,
     symbolic_regions: &'ir [Range<Address>],
     symbolic_code_regions: &'ir [Range<Address>],
+    no_tags_in_regions: &'ir [Range<Address>],
     assertion_reports: Option<String>,
     generate_testfile: bool,
     sparse: bool,
     init_pc: u64,
     register_map: HashMap<(String, Vec<extract_state::GVAccessor<String>>), Sym>,
+    harness_code: Option<u64>,
+    harness_data: Option<u64>,
+    uart: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -521,7 +558,7 @@ fn generate_test<'ir, B: BV, T: Target>(
         let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
         let mut events = trace.to_vec();
         let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-        write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+        write_events(&mut std::io::stdout(), &events, &conf.shared_state);
     }
 
     println!("Initial state extracted from events:");
@@ -542,8 +579,8 @@ fn generate_test<'ir, B: BV, T: Target>(
     if conf.generate_testfile {
         generate_testfile::make_testfile(target, basename, &instr_map, initial_state, conf.init_pc, opcode_index)?;
     } else {
-        generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
-        generate_object::build_elf_file(conf.isa_config, basename)?;
+        target.make_asm_files(basename, &instr_map, initial_state, conf.harness_code, conf.harness_data, conf.uart, entry_reg, exit_reg)?;
+        target.build_elf_file(conf.isa_config, basename)?;
     }
 
     Ok(())
@@ -747,7 +784,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
                 let mut events = trace.to_vec();
                 let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-                write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+                write_events(&mut std::io::stdout(), &events, &conf.shared_state);
             }
             
             println!("Initial state extracted from events:");
@@ -773,10 +810,10 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                             .unwrap_or_else(
                                 |error| println!("Failed to write test file: {}", error.to_string()));
                     } else {
-                        generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)
+                        target.make_asm_files(&basename_number, &instr_map, initial_state, conf.harness_code, conf.harness_data, conf.uart, entry_reg, exit_reg)
                             .map_err(|e| e.to_string())
                             .and_then(
-                                |_| generate_object::build_elf_file(conf.isa_config, &basename_number)
+                                |_| target.build_elf_file(conf.isa_config, &basename_number)
                                     .map_err(|e| e.to_string()))
                             .unwrap_or_else(
                                 |error| println!("Failed to construct test: {}", error));

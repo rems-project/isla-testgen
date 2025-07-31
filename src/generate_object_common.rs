@@ -1,6 +1,7 @@
 // BSD 2-Clause License
 //
-// Copyright (c) 2020 Brian Campbell
+// Copyright (c) 2020, 2021, 2022 Brian Campbell
+// Copyright (c) 2020 Alasdair Armstrong
 //
 // All rights reserved.
 //
@@ -27,20 +28,14 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#[macro_use]
-extern crate lazy_static;
+use std::error::Error;
 
-#[macro_use]
-extern crate lalrpop_util;
+#[derive(Debug)]
+pub struct BuildError(pub String);
 
-pub mod acl2_insts;
-lalrpop_mod!(pub acl2_insts_parser);
-pub mod asl_tag_files;
-pub mod execution;
-pub mod extract_state;
-pub mod generate_object_arm;
-pub mod generate_object_cheriot;
-pub mod generate_object_common;
-pub mod generate_testfile;
-pub mod target;
-pub mod undef_checker;
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl Error for BuildError {}

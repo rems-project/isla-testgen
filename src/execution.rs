@@ -32,6 +32,7 @@ use crossbeam::queue::SegQueue;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::ops::Range;
 use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
@@ -43,10 +44,10 @@ use crate::undef_checker::check_undefined_bits;
 use isla_lib::bitvector::{BV, b64::B64};
 use isla_lib::error::ExecError;
 use isla_lib::executor;
-use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions, TaskState};
+use isla_lib::executor::{freeze_frame, Frame, LocalFrame, Run, StopConditions, TaskId, TaskState};
 use isla_lib::ir::*;
 use isla_lib::source_loc::SourceLoc;
-use isla_lib::memory::{Memory, SmtKind};
+use isla_lib::memory::{Address, Memory, SmtKind};
 use isla_lib::primop_util::smt_sbits;
 use isla_lib::register::RegisterBindings;
 use isla_lib::simplify::write_events;
@@ -61,7 +62,7 @@ fn smt_value<B: BV>(v: &Val<B>) -> Result<smtlib::Exp<Sym>, ExecError> {
     isla_lib::primop_util::smt_value(v, SourceLoc::unknown())
 }
 
-fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, bytes: u64) -> smtlib::Exp<Sym> {
+fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, addr_size: u32, bytes: u64) -> smtlib::Exp<Sym> {
     use smtlib::Exp;
     // TODO: endianness?
     let mut mem_exp = Exp::Select(Box::new(Exp::Var(memory)), Box::new(addr_exp.clone()));
@@ -69,7 +70,7 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, bytes: u64) -> smtlib:
         mem_exp = Exp::Concat(
             Box::new(Exp::Select(
                 Box::new(Exp::Var(memory)),
-                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, 64)))),
+                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, addr_size)))),
             )),
             Box::new(mem_exp),
         )
@@ -89,6 +90,42 @@ struct SeqMemory {
     translation_table: Option<TranslationTableInfo>,
     memory_var: Sym,
     tag_memory_var: Sym,
+    addr_size: u32,
+    cap_addr_mask: u64,
+    no_tags_in_regions: Vec<Range<Address>>,
+}
+
+impl SeqMemory {
+    fn tag_constraint<B: BV>(
+        &self,
+        solver: &mut Solver<B>,
+        address: &smtlib::Exp<Sym>,
+        tag: &smtlib::Exp<Sym>,
+    ) -> Option<smtlib::Exp<Sym>> {
+        use isla_lib::smt::smtlib::Exp::*;
+        let mut i = self.no_tags_in_regions.iter();
+        if let Some(r) = i.next() {
+            let addr_var = match address {
+                Var(v) => *v,
+                _ => {
+                    let v = solver.fresh();
+                    solver.add(smtlib::Def::DefineConst(v, address.clone()));
+                    v
+                }
+            };
+            let mut prop = Or(Box::new(Bvult(Box::new(Var(addr_var)), Box::new(bits64(r.start, self.addr_size)))),
+                              Box::new(Bvule(Box::new(bits64(r.end, self.addr_size)), Box::new(Var(addr_var)))));
+            for r in i {
+                prop = And(Box::new(prop),
+                           Box::new(Or(Box::new(Bvult(Box::new(Var(addr_var)), Box::new(bits64(r.start, self.addr_size)))),
+                                       Box::new(Bvule(Box::new(bits64(r.end, self.addr_size)), Box::new(Var(addr_var)))))));
+            };
+            prop = Or(Box::new(Eq(Box::new(tag.clone()), Box::new(bits64(0, 1)))), Box::new(prop));
+            Some(prop)
+        } else {
+            None
+        }
+    }
 }
 
 impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
@@ -109,7 +146,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         let addr_exp = smt_value(address).unwrap_or_else(|err| panic!("Bad read address value {:?}: {}", address, err));
         let mut read_prop = Exp::Eq(
             Box::new(read_exp.clone()),
-            Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
+            Box::new(smt_read_exp(self.memory_var, &addr_exp, self.addr_size, bytes as u64)),
         );
         let tag_exp = match tag {
             Some(tag_value) => {
@@ -120,6 +157,9 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
                     Box::new(Exp::Select(Box::new(Exp::Var(self.tag_memory_var)), Box::new(addr_exp.clone()))),
                 );
                 read_prop = Exp::And(Box::new(read_prop), Box::new(prop));
+                if let Some(p) = self.tag_constraint(solver, &addr_exp, &tag_exp) {
+                    read_prop = Exp::And(Box::new(read_prop), Box::new(p))
+                };
                 Some(tag_exp)
             }
             None => None,
@@ -177,22 +217,24 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         for i in 1..bytes {
             mem_exp = Exp::Store(
                 Box::new(mem_exp),
-                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, 64)))),
+                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, self.addr_size)))),
                 Box::new(Exp::Extract(i * 8 + 7, i * 8, Box::new(data_exp.clone()))),
             )
         }
         self.memory_var = solver.fresh();
         solver.add(Def::DefineConst(self.memory_var, mem_exp));
-        let (tag_exp, tag_addr_exp) = match tag {
+        // When clearing capability tags we might not start with an aligned address
+        let tag_addr_exp = Exp::Bvand(Box::new(addr_exp.clone()), Box::new(Exp::Bvnot(Box::new(bits64(self.cap_addr_mask, self.addr_size)))));
+        let tag_exp = match tag {
             Some(tag_value) => {
                 let tag_exp = smt_value(tag_value)
                     .unwrap_or_else(|err| panic!("Bad memory tag write value {:?}: {}", tag_value, err));
-                (tag_exp, addr_exp.clone())
+                if let Some(p) = self.tag_constraint(solver, &tag_addr_exp, &tag_exp) {
+                    solver.add(Def::Assert(p));
+                };
+                tag_exp
             }
-            None => (
-                bits64(0, 1),
-                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(bits64(0xffff_ffff_ffff_fff0u64, 64))),
-            ),
+            None => bits64(0, 1),
         };
         let tag_mem_exp =
             Exp::Store(Box::new(Exp::Var(self.tag_memory_var)), Box::new(tag_addr_exp), Box::new(tag_exp.clone()));
@@ -254,7 +296,7 @@ fn resolve_concrete_pc<'ir, B: BV>(
             let pc_addr = apply_accessor_val(shared_state, full_val, &pc_accessor);
             match pc_addr {
 	        Val::Symbolic(v) => {
-	            if solver.check_sat().is_unsat().map_err(|e| format!("{}", e))? {
+	            if solver.check_sat(SourceLoc::unknown()).is_unsat().map_err(|e| format!("{}", e))? {
 		        return Err(String::from("Unsatisfiable in post-processing"));
 	            }
 	            let model_val = {
@@ -263,7 +305,7 @@ fn resolve_concrete_pc<'ir, B: BV>(
 	            };
 	            match model_val {
 		        Some(Exp::Bits64(result)) => {
-		            if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))))
+		            if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))), SourceLoc::unknown())
 			        .is_unsat().map_err(|e| format!("{}", e))? {
 			            let bits = B::new(result.lower_u64(), result.len());
 			            // Cache the concrete value
@@ -288,18 +330,17 @@ fn resolve_concrete_pc<'ir, B: BV>(
 }
 
 fn just_check<B: BV>(solver: &mut Solver<B>, s: &str) -> Result<(), String> {
-    match solver.check_sat() {
+    match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => Ok(()),
         SmtResult::Unsat => Err(format!("Unsatisfiable at {}", s)),
         SmtResult::Unknown => Err(format!("Solver returned unknown at {}", s)),
     }
 }
     
-
 fn postprocess<'ir, B: BV, T: Target>(
     target: &T,
     tid: usize,
-    _task_id: usize,
+    _task_id: TaskId,
     mut local_frame: LocalFrame<'ir, B>,
     shared_state: &SharedState<'ir, B>,
     mut solver: Solver<B>,
@@ -351,7 +392,7 @@ fn postprocess<'ir, B: BV, T: Target>(
     
     target.postprocess(shared_state, &local_frame, &mut solver)?;
 
-    let result = match solver.check_sat() {
+    let result = match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => Ok((freeze_frame(&local_frame), smt::checkpoint(&mut solver))),
         SmtResult::Unsat => Err(String::from("unsatisfiable")),
         SmtResult::Unknown => Err(String::from("solver returned unknown")),
@@ -366,7 +407,7 @@ fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, 
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
-    match solver.check_sat() {
+    match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => (),
         SmtResult::Unsat => return Err(String::from("Unsatisfiable at recheck")),
         SmtResult::Unknown => return Err(String::from("Solver returned unknown at recheck")),
@@ -397,7 +438,7 @@ pub fn apply_accessor_type<'a, B: BV>(
                 let name =
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match ty {
-                    Ty::Struct(struct_name) => ty = shared_state.structs.get(struct_name).unwrap().get(&name).unwrap(),
+                    Ty::Struct(struct_name) => ty = shared_state.type_info.structs.get(struct_name).unwrap().get(&name).unwrap(),
                     _ => panic!("Bad type for struct {:?}", ty),
                 }
             }
@@ -425,13 +466,13 @@ pub fn apply_accessor_val_mut<'a, B: BV>(
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get_mut(&name).unwrap(),
-                    _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for struct {}", val.to_string(shared_state)),
                 }
             }
             GVAccessor::Element(i) => {
                 match val {
                     Val::Vector(elements) => val = &mut elements[*i],
-                    _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for vector {}", val.to_string(shared_state)),
                 }
             }
         }
@@ -451,13 +492,13 @@ pub fn apply_accessor_val<'a, B: BV>(
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get(&name).unwrap(),
-                    _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for struct {}", val.to_string(shared_state)),
                 }
             }
             GVAccessor::Element(i) => {
                 match val {
                     Val::Vector(elements) => val = &elements[*i],
-                    _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for vector {}", val.to_string(shared_state)),
                 }
             }
         }
@@ -501,6 +542,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
     target: &T,
+    no_tags_in_regions: &'ir [Range<Address>],
 ) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<(String, Vec<GVAccessor<String>>), Sym>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
@@ -532,7 +574,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
 
     let (pc_str, pc_acc) = target.pc_reg();
     let pc_id = shared_state.symtab.lookup(&pc_str);
-    let mut pc_full = local_frame.regs().get_last_if_initialized(pc_id).unwrap().clone();
+    let mut pc_full = local_frame.regs().get_last_if_initialized(pc_id).unwrap_or_else(|| panic!("PC not initialised")).clone();
     let pc_type = register_types.get(&pc_id).unwrap();
     let pc_addr = apply_accessor_val_mut(shared_state, &mut pc_full, &pc_acc);
     let pc_type = apply_accessor_type(shared_state, &pc_type, &pc_acc);
@@ -552,17 +594,17 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
 
     solver.add(smtlib::Def::DeclareConst(
         memory,
-        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
+        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(target.addr_size())), Box::new(smtlib::Ty::BitVec(8))),
     ));
     solver.add(smtlib::Def::DeclareConst(
         tag_memory_var,
-        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(1))),
+        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(target.addr_size())), Box::new(smtlib::Ty::BitVec(1))),
     ));
 
     target.init(shared_state, &mut local_frame, &mut solver, init_pc, &reg_vars);
 
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var });
+        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var, addr_size: target.addr_size(), cap_addr_mask: T::capability_address_mask(), no_tags_in_regions: Vec::from(no_tags_in_regions) });
     local_frame.memory_mut().set_client_info(memory_info);
     local_frame.memory().log();
 
@@ -600,16 +642,17 @@ pub fn run_function<'ir, B: BV>(
     let task_state = TaskState::new();
     let task = frame
         .new_call(fn_id, arg_tys, ret_ty, Some(&args), instrs)
-        .task_with_checkpoint(1, &task_state, checkpoint);
+        .task_with_checkpoint(TaskId::fresh(), &task_state, checkpoint);
 
     executor::start_single(
         task,
         &shared_state,
         &results,
         &move |_tid, _task_id, result, _shared_state, mut solver, results| match result {
-            Ok((val, frame)) => {
+            Ok((Run::Finished(val), frame)) => {
                 results.push((val, frame, smt::checkpoint(&mut solver)));
             }
+            Ok((Run::Exit | Run::Suspended | Run::Dead, _)) => (),
             Err(err) => eprintln!("Helper function {} failed: {:?}", function_name, err),
         },
     );
@@ -639,7 +682,7 @@ pub fn init_model<'ir, B: BV>(
         .add_lets(&lets)
         .add_regs(&regs)
         .set_memory(memory.clone())
-        .task(0, &task_state);
+        .task(TaskId::fresh(), &task_state);
 
     executor::start_single(
         init_task,
@@ -713,7 +756,7 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
     let read_exp = smt_value(&read_val).unwrap();
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(read_exp))));
 
-    let ok = match solver.check_sat() {
+    let ok = match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => true,
         SmtResult::Unsat => {
             println!("Placing opcode in memory unsatisfiable");
@@ -757,7 +800,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
 
     let task_state = TaskState::new();
     let mut task =
-        local_frame.new_call(function_id, args, ret_ty, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, &task_state, checkpoint);
+        local_frame.new_call(function_id, args, ret_ty, Some(&[Val::Unit]), instrs).task_with_checkpoint(TaskId::fresh(), &task_state, checkpoint);
     task.set_stop_conditions(stop_set);
 
     let queue = Arc::new(SegQueue::new());
@@ -772,14 +815,14 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
         &move |tid, task_id, result, shared_state, mut solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             match result {
-                Ok((val, mut frame)) => {
+                Ok((Run::Finished(val), mut frame)) => {
                     target.post_instruction(shared_state, &mut frame, &mut solver);
-                    let check = solver.check_sat();
+                    let check = solver.check_sat(SourceLoc::unknown());
                     // We always need events to do the undefined bits check
                     let events = events_of(&solver, true);
                     if matches!(check, SmtResult::Sat) {
                         if let Some((ex_val, ex_loc)) = frame.get_exception() {
-                            let s = ex_val.to_string(&shared_state.symtab);
+                            let s = ex_val.to_string(shared_state);
                             collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
                         } else {
                             if let Err(m) =
@@ -806,10 +849,10 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                         collected.push((Err(format!("Post-instruction check failed with {:?}", check)), events))
                     }
                 }
-                Err((ExecError::Dead, _)) => {
+                Ok((Run::Exit | Run::Suspended | Run::Dead, _)) => {
                     let events = events_of(&solver, dump_events);
-                    log_from!(tid, log::VERBOSE, "dead");
-                    collected.push((Err(String::from("dead")), events))
+                    log_from!(tid, log::VERBOSE, "bad run");
+                    collected.push((Err(String::from("bad run")), events))
                 }
                 Err((assertion @ ExecError::AssertionFailure(_, _), backtrace)) if assertion_events => {
                     let events = events_of(&solver, true);
@@ -850,7 +893,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     let stdout = std::io::stderr();
                     let mut handle = stdout.lock();
                     let events: Vec<Event<B>> = events.drain(..).rev().collect();
-                    write_events(&mut handle, &events, &shared_state.symtab);
+                    write_events(&mut handle, &events, shared_state);
                 }
                 result.push((new_frame, new_checkpoint));
             }
@@ -862,14 +905,14 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     let stdout = std::io::stderr();
                     let mut handle = stdout.lock();
                     let events: Vec<Event<B>> = events.drain(..).rev().collect();
-                    write_events(&mut handle, &events, &shared_state.symtab);
+                    write_events(&mut handle, &events, shared_state);
                 }
                 if let Some(file_name) = assertion_reports {
                     if msg.starts_with("Assertion") {
                         let mut report_file = OpenOptions::new().append(true).create(true).open(file_name).unwrap();
                         write!(report_file, "{}", msg).unwrap();
                         let events: Vec<Event<B>> = events.drain(..).rev().collect();
-                        write_events(&mut report_file, &events, &shared_state.symtab);
+                        write_events(&mut report_file, &events, shared_state);
                     }
                 }
             }

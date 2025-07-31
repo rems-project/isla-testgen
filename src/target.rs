@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use isla_lib::bitvector::{BV, b64::B64};
+use isla_lib::config::ISAConfig;
 use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{Name, SharedState, Ty, Val};
 use isla_lib::primop_util::smt_value;
@@ -40,7 +41,10 @@ use isla_lib::source_loc::SourceLoc;
 use isla_lib::zencode;
 
 use crate::execution;
-use crate::extract_state::GVAccessor;
+use crate::extract_state::{GVAccessor, PrePostStates};
+use crate::generate_object_arm;
+use crate::generate_object_cheriot;
+use crate::generate_object_common::BuildError;
 
 // For now we only need one entry in the translation table (and only
 // for Morello), so this is (address range, entry address, entry data).
@@ -52,8 +56,10 @@ where
 {
     /// Model initialisation function
     fn init_function(&self) -> String;
-    /// Test start address
-    fn init_pc(&self) -> u64;
+    /// Test start address when no code regions specified
+    fn default_init_pc(&self) -> u64;
+    /// Size of memory addresses
+    fn addr_size(&self) -> u32;
     /// Registers supported by the test harness
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Registers that the harness wants even if they're not in the trace
@@ -111,6 +117,7 @@ where
         solver: &mut Solver<B>,
     ) -> Result<(), String>;
     fn has_capabilities(&self) -> bool;
+    fn capability_address_mask() -> u64;
     fn run_in_el0(&self) -> bool;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
@@ -120,6 +127,20 @@ where
     // by a runtime-determined anount, which happens in the Morello
     // specification's capability functions)
     fn supports_undef_checker(&self) -> bool;
+    // Whether we support the following two functions, or just test files
+    fn supports_generate_object(&self) -> bool;
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        harness_code: Option<u64>,
+        harness_data: Option<u64>,
+        uart: Option<u64>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> ;
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError>;
 }
 
 pub struct Aarch64 {}
@@ -129,8 +150,12 @@ impl Target for Aarch64 {
         String::from("init")
     }
 
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         0x400000
+    }
+
+    fn addr_size(&self) -> u32 {
+        64
     }
 
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
@@ -221,6 +246,9 @@ impl Target for Aarch64 {
     fn has_capabilities(&self) -> bool {
         false
     }
+    fn capability_address_mask() -> u64 {
+        0xf
+    }
     fn run_in_el0(&self) -> bool {
 	false
     }
@@ -230,6 +258,27 @@ impl Target for Aarch64 {
     // TODO: try it, might work...
     fn supports_undef_checker(&self) -> bool {
         false
+    }
+
+    fn supports_generate_object(&self) -> bool {
+        true
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        _harness_code: Option<u64>,
+        _harness_data: Option<u64>,
+        _uart: Option<u64>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        // TODO: harness_code/_data, uart
+        generate_object_arm::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
+    }
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
+        generate_object_arm::build_elf_file(isa, base_name)
     }
 }
 
@@ -287,8 +336,12 @@ impl Target for Morello {
         String::from("__InitSystem")
     }
 
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         0x40400000
+    }
+
+    fn addr_size(&self) -> u32 {
+        64
     }
     fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
         let mut regs: Vec<(String, Vec<GVAccessor<String>>)> =
@@ -584,6 +637,9 @@ impl Target for Morello {
     fn has_capabilities(&self) -> bool {
         !self.aarch64_compatible()
     }
+    fn capability_address_mask() -> u64 {
+        0xf
+    }
     fn run_in_el0(&self) -> bool {
 	match self.style {
 	    MorelloStyle::EL0 => true,
@@ -602,6 +658,27 @@ impl Target for Morello {
     // of initialisation depends on the exponent.
     fn supports_undef_checker(&self) -> bool {
         false
+    }
+
+    fn supports_generate_object(&self) -> bool {
+        true
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        _harness_code: Option<u64>,
+        _harness_data: Option<u64>,
+        _uart: Option<u64>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        // TODO: harness_code/_data, uart
+        generate_object_arm::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
+    }
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
+        generate_object_arm::build_elf_file(isa, base_name)
     }
 }
 
@@ -635,9 +712,13 @@ impl Target for X86 {
         String::from("initialise_64_bit_mode")
     }
     /// Test start address
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         // Appears to be the default I got from ld on Linux
         0x401000
+    }
+
+    fn addr_size(&self) -> u32 {
+        64
     }
             
     /// Registers supported by the test harness
@@ -805,6 +886,9 @@ impl Target for X86 {
             X86Style::Cap => true,
         }
     }
+    fn capability_address_mask() -> u64 {
+        0xf
+    }
     fn run_in_el0(&self) -> bool { panic!("not implemented"); }
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
@@ -816,5 +900,229 @@ impl Target for X86 {
     }
     fn supports_undef_checker(&self) -> bool {
         true
+    }
+
+    fn supports_generate_object(&self) -> bool {
+        false
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        _base_name: &str,
+        _instr_map: &HashMap<B, String>,
+        _pre_post_states: PrePostStates<B>,
+        _harness_code: Option<u64>,
+        _harness_data: Option<u64>,
+        _uart: Option<u64>,
+        _entry_reg: u32,
+        _exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        panic!("Not supported")
+    }
+    fn build_elf_file<B>(&self, _isa: &ISAConfig<B>, _base_name: &str) -> Result<(), BuildError> {
+        panic!("Not supported")
+    }
+}
+
+pub struct CHERIoT { }
+
+impl Target for CHERIoT {
+    /// Model initialisation function
+    fn init_function(&self) -> String {
+        String::from("isla_testgen_init")
+    }
+    /// Test start address
+    fn default_init_pc(&self) -> u64 {
+        // Default RAM start for the Sail simulator, also seen as start in the test-suite ELF built for the Sail simulator
+        0x80000000
+    }
+
+    fn addr_size(&self) -> u32 {
+        32
+    }
+            
+    /// Registers supported by the test harness
+    fn regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> {
+        let mut regs: Vec<(String, Vec<GVAccessor<String>>)> = (1..15).map(|r| (format!("x{}", r), vec![])).collect();
+        regs.push(("PC".to_string(), vec![]));
+        regs.push(("PCC".to_string(), vec![]));
+        // TODO: other system registers?
+        regs
+    }
+    /// Registers that the harness wants even if they're not in the trace
+    fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
+    /// System registers that the harness should check
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![("PCC".to_string(), vec![])] }
+    fn special_reg_init<'ctx, 'ir, B: BV>(
+        &self,
+        _reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        ty: &Ty<Name>,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        ctx: &'ctx smt::Context,
+        solver: &mut Solver<'ctx, B>,
+    ) -> Option<(Sym, Val<B>)> {
+        // TODO: use accessor?
+        match ty {
+            Ty::Struct(struct_name) if shared_state.symtab.get("zCapability") == Some(*struct_name) => {
+                let var = solver.declare_const(smtlib::Ty::BitVec(65), SourceLoc::unknown());
+                let tag = solver.define_const(
+                    Exp::Eq(Box::new(Exp::Extract(64, 64, Box::new(Exp::Var(var)))),
+                            Box::new(Exp::Bits64(B64::new(1, 1)))),
+                    SourceLoc::unknown());
+                let content = solver.define_const(Exp::Extract(63, 0, Box::new(Exp::Var(var))), SourceLoc::unknown());
+                let val = execution::run_function_solver(
+                    shared_state,
+                    frame,
+                    ctx,
+                    solver,
+                    "capBitsToCapability",
+                    vec![Val::Symbolic(tag), Val::Symbolic(content)]
+                );
+                let assert_val = execution::run_function_solver(
+                    shared_state,
+                    frame,
+                    ctx,
+                    solver,
+                    "isla_init_cap_property",
+                    vec![val.clone()]
+                );
+                match assert_val {
+                    Val::Symbolic(v) => solver.add(smtlib::Def::Assert(Exp::Var(v))),
+                    _ => panic!("Bad value from isla_init_cap_property!"),
+                };
+                Some((var, val))
+            }
+            _ => None
+        }
+    }
+    fn special_reg_encode<'ctx, 'ir, B: BV>(
+        &self,
+        reg: &str,
+        _acc: &Vec<GVAccessor<String>>,
+        ty: &Ty<Name>,
+        shared_state: &SharedState<'ir, B>,
+        frame: &mut LocalFrame<'ir, B>,
+        ctx: &'ctx smt::Context,
+        solver: &mut Solver<'ctx, B>,
+    ) -> Option<Val<B>> {
+        // TODO: use accessor?
+        let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
+        match ty {
+            Ty::Struct(struct_name) if shared_state.symtab.get("zCapability") == Some(*struct_name) => {
+                let struct_val = frame.regs().get_last_if_initialized(name).unwrap().clone();
+                let tag_name = shared_state.symtab.get("ztag").unwrap();
+                let tag = match &struct_val {
+                    Val::Struct(fields) => fields.get(&tag_name).unwrap().clone(),
+                    _ => panic!("Capability register {} wasn't a struct", reg),
+                };
+                let tag = match tag {
+                    Val::Bool(b) => Exp::Bits64(B64::new(if b { 1 } else { 0 }, 1)),
+                    Val::Symbolic(v) => Exp::Ite(
+                        Box::new(Exp::Var(v)),
+                        Box::new(Exp::Bits64(B64::new(1,1))),
+                        Box::new(Exp::Bits64(B64::new(0,1)))
+                    ),
+                    _ => panic!("Unexpected value for capability tag in {}: {:?}", reg, tag),
+                };
+                let content = execution::run_function_solver(
+                    shared_state,
+                    frame,
+                    ctx,
+                    solver,
+                    "capToBits",
+                    vec![struct_val]
+                );
+                let content = smt_value(&content, SourceLoc::unknown()).unwrap();
+                let var = solver.define_const(Exp::Concat(Box::new(tag), Box::new(content)), SourceLoc::unknown());
+                Some(Val::Symbolic(var))
+            }
+            _ => None
+        }
+    }
+    /// Any additional initialisation
+    fn init<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _local_frame: &mut LocalFrame<'ir, B>,
+        solver: &mut Solver<B>,
+        init_pc: u64,
+        regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
+    ) {
+        for ((reg, _acc), v) in regs {
+            use isla_lib::smt::smtlib::*;
+            if reg == "PCC" {
+                // Force PC and PCC to match
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(31, 0, Box::new(Exp::Var(*v)))),
+                    Box::new(bits64(init_pc, 32)))));
+            }
+        }
+    }
+    fn post_instruction<'ir, B: BV>(
+        &self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &mut LocalFrame<'ir, B>,
+        _solver: &mut Solver<B>,
+    ) { }
+    fn translation_table_info(&self) -> Option<TranslationTableInfo> { None }
+    fn pc_alignment_pow() -> u32 { 0 }
+    fn pc_reg(&self) -> (String, Vec<GVAccessor<String>>) {
+        (String::from("zPC"), vec![])
+    }
+    fn number_gprs() -> u32 { 15 }
+    fn is_gpr(name: &str) -> Option<u32> {
+        if name.starts_with("zx") {
+            let reg_str = &name[2..];
+            let i = u32::from_str_radix(reg_str, 10).ok()?;
+            // Adjust for the zero register
+            if i > 0 { Some(i-1) } else { None }
+        } else {
+            None
+        }
+    }
+    fn gpr_prefix() -> &'static str { "zx" }
+    fn gpr_pad() -> bool { false }
+    // There's a handle_exception too, but it's not used
+    fn exception_stop_functions() -> Vec<String> { vec!["trap_handler".to_string(), "exception_handler".to_string()] }
+    fn postprocess<'ir, B: BV>(&self,
+        _shared_state: &SharedState<'ir, B>,
+        _frame: &LocalFrame<B>,
+        _solver: &mut Solver<B>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn has_capabilities(&self) -> bool { true }
+    fn capability_address_mask() -> u64 { 0x7 }
+    fn run_in_el0(&self) -> bool { panic!("not implemented"); }
+    // I'd like to move the stuff below to the config
+    fn run_instruction_function() -> String { String::from("isla_testgen_step") }
+    // Note that the final instruction is just a dummy because we only
+    // support gdb tests at the moment.
+    fn final_instruction<B: BV>(&self, _exit_register: u32) -> B {
+        B::new(0b1001000000000010, 16) // C_EBREAK
+    }
+    fn supports_undef_checker(&self) -> bool {
+        false // TODO: maybe?
+    }
+
+    fn supports_generate_object(&self) -> bool {
+        true
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        harness_code: Option<u64>,
+        harness_data: Option<u64>,
+        uart: Option<u64>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        generate_object_cheriot::make_asm_files(self, base_name, instr_map, pre_post_states, harness_code, harness_data, uart, entry_reg, exit_reg)
+    }
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
+        generate_object_cheriot::build_elf_file(isa, base_name)
     }
 }

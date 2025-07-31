@@ -409,7 +409,7 @@ fn check_smt<B: BV>(
                 log!(log::VERBOSE, format!("Var {} is defined", var));
             }
         }
-        DefineEnum(_) => (),
+        DefineEnum(_, _) => (),
         Assert(Exp::Eq(lhs, rhs)) if matches!(lhs.as_ref(), Exp::Var(_)) & matches!(rhs.as_ref(), Exp::Bits(_) | Exp::Bits64(_)) => {
             match lhs.as_ref() {
                 Exp::Var(v) => {
