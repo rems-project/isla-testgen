@@ -84,9 +84,8 @@ where
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
-    ) -> Option<Val<B>>;
+        checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<Val<B>>);
     /// Any additional initialisation
     fn init<'ir, B: BV>(
         &self,
@@ -188,9 +187,8 @@ impl Target for Aarch64 {
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
-    ) -> Option<Val<B>> { None }
+         checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<Val<B>>) { (checkpoint, None) }
     fn init<'ir, B: BV>(
         &self,
         _shared_state: &SharedState<'ir, B>,
@@ -424,9 +422,8 @@ impl Target for Morello {
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
-    ) -> Option<Val<B>> { None }
+         checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<Val<B>>) { (checkpoint, None) }
     fn init<'ir, B: BV>(
         &self,
         shared_state: &SharedState<'ir, B>,
@@ -784,9 +781,8 @@ impl Target for X86 {
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
-    ) -> Option<Val<B>> {
+         checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<Val<B>>) {
         // TODO: use accessor?
         let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
         match ty {
@@ -806,19 +802,20 @@ impl Target for X86 {
                     ),
                     _ => panic!("Unexpected value for capability tag in {}: {:?}", reg, tag),
                 };
-                let content = execution::run_function_solver(
+                let (content, _frame, checkpoint) = execution::run_function(
                     shared_state,
                     frame,
-                    ctx,
-                    solver,
+                    checkpoint,
                     "capToMemBits",
                     vec![struct_val]
                 );
+                let ctx = smt::Context::new(smt::Config::new());
+                let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
                 let content = smt_value(&content, SourceLoc::unknown()).unwrap();
                 let var = solver.define_const(Exp::Concat(Box::new(tag), Box::new(content)), SourceLoc::unknown());
-                Some(Val::Symbolic(var))
+                (smt::checkpoint(&mut solver), Some(Val::Symbolic(var)))
             }
-            _ => None
+            _ => (checkpoint, None)
         }
     }
     /// Any additional initialisation
@@ -1003,9 +1000,8 @@ impl Target for CHERIoT {
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
-    ) -> Option<Val<B>> {
+         checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<Val<B>>) {
         // TODO: use accessor?
         let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
         match ty {
@@ -1025,19 +1021,20 @@ impl Target for CHERIoT {
                     ),
                     _ => panic!("Unexpected value for capability tag in {}: {:?}", reg, tag),
                 };
-                let content = execution::run_function_solver(
+                let (content, _frame, checkpoint) = execution::run_function(
                     shared_state,
                     frame,
-                    ctx,
-                    solver,
+                    checkpoint,
                     "capToBits",
                     vec![struct_val]
                 );
+                let ctx = smt::Context::new(smt::Config::new());
+                let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
                 let content = smt_value(&content, SourceLoc::unknown()).unwrap();
                 let var = solver.define_const(Exp::Concat(Box::new(tag), Box::new(content)), SourceLoc::unknown());
-                Some(Val::Symbolic(var))
+                (smt::checkpoint(&mut solver), Some(Val::Symbolic(var)))
             }
-            _ => None
+            _ => (checkpoint, None)
         }
     }
     /// Any additional initialisation

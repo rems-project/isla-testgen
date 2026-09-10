@@ -619,21 +619,6 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver), reg_vars)
 }
 
-pub fn run_function_solver<'ctx, 'ir, B: BV>(
-    shared_state: &SharedState<'ir, B>,
-    frame: &mut LocalFrame<'ir, B>,
-    ctx: &'ctx smt::Context,
-    solver: &mut Solver<'ctx, B>,
-    function_name: &'ir str,
-    args: Vec<Val<B>>,
-) -> Val<B> {
-    let c = smt::checkpoint(solver);
-    let (v, ff, cc) = run_function(shared_state, frame, c, function_name, args);
-    *frame = ff;
-    *solver = Solver::from_checkpoint(ctx, cc);
-    v
-}
-
 pub fn run_function<'ir, B: BV>(
     shared_state: &SharedState<'ir, B>,
     frame: &mut LocalFrame<'ir, B>,
