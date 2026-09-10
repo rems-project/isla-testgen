@@ -67,26 +67,26 @@ where
     /// System registers that the harness should check
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)>;
     /// Special setup for some registers
-    fn special_reg_init<'ctx, 'ir, B: BV>(
+    fn special_reg_init<'ir, B: BV>(
         &self,
         reg: &str,
         acc: &Vec<GVAccessor<String>>,
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
+        cfg: &smt::Config,
+        solver: &mut Solver<B>,
     ) -> Option<(Sym, Val<B>)>;
     /// Special encoding for some registers in post-state
-    fn special_reg_encode<'ctx, 'ir, B: BV>(
+    fn special_reg_encode<'ir, B: BV>(
         &self,
         reg: &str,
         acc: &Vec<GVAccessor<String>>,
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
+        cfg: &smt::Config,
+        solver: &mut Solver<B>,
     ) -> Option<Val<B>>;
     /// Any additional initialisation
     fn init<'ir, B: BV>(
@@ -173,25 +173,25 @@ impl Target for Aarch64 {
         vec![]
     }
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
-    fn special_reg_init<'ctx, 'ir, B: BV>(
+    fn special_reg_init<'ir, B: BV>(
         &self,
         _reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
+        _cfg: &smt::Config,
+        _solver: &mut Solver<B>,
     ) -> Option<(Sym, Val<B>)> { None }
-    fn special_reg_encode<'ctx, 'ir, B: BV>(
+    fn special_reg_encode<'ir, B: BV>(
         &self,
         _reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
+        _cfg: &smt::Config,
+        _solver: &mut Solver<B>,
     ) -> Option<Val<B>> { None }
     fn init<'ir, B: BV>(
         &self,
@@ -410,25 +410,25 @@ impl Target for Morello {
             None
         }
     }
-    fn special_reg_init<'ctx, 'ir, B: BV>(
+    fn special_reg_init<'ir, B: BV>(
         &self,
         _reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
+        _cfg: &smt::Config,
+        _solver: &mut Solver<B>,
     ) -> Option<(Sym, Val<B>)> { None }
-    fn special_reg_encode<'ctx, 'ir, B: BV>(
+    fn special_reg_encode<'ir, B: BV>(
         &self,
         _reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
+        _cfg: &smt::Config,
+        _solver: &mut Solver<B>,
     ) -> Option<Val<B>> { None }
     fn init<'ir, B: BV>(
         &self,
@@ -747,15 +747,15 @@ impl Target for X86 {
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
     /// System registers that the harness should check
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { self.common_regs() }
-    fn special_reg_init<'ctx, 'ir, B: BV>(
+    fn special_reg_init<'ir, B: BV>(
         &self,
         _reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
+        cfg: &smt::Config,
+        solver: &mut Solver<B>,
     ) -> Option<(Sym, Val<B>)> {
         // TODO: use accessor?
         match ty {
@@ -769,7 +769,7 @@ impl Target for X86 {
                 let val = execution::run_function_solver(
                     shared_state,
                     frame,
-                    ctx,
+                    cfg,
                     solver,
                     "memBitsToCapability",
                     vec![Val::Symbolic(tag), Val::Symbolic(content)]
@@ -779,15 +779,15 @@ impl Target for X86 {
             _ => None
         }
     }
-    fn special_reg_encode<'ctx, 'ir, B: BV>(
+    fn special_reg_encode<'ir, B: BV>(
         &self,
         reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
+        cfg: &smt::Config,
+        solver: &mut Solver<B>,
     ) -> Option<Val<B>> {
         // TODO: use accessor?
         let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
@@ -811,7 +811,7 @@ impl Target for X86 {
                 let content = execution::run_function_solver(
                     shared_state,
                     frame,
-                    ctx,
+                    cfg,
                     solver,
                     "capToMemBits",
                     vec![struct_val]
@@ -952,15 +952,15 @@ impl Target for CHERIoT {
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
     /// System registers that the harness should check
     fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![("PCC".to_string(), vec![])] }
-    fn special_reg_init<'ctx, 'ir, B: BV>(
+    fn special_reg_init<'ir, B: BV>(
         &self,
         _reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
+        cfg: &smt::Config,
+        solver: &mut Solver<B>,
     ) -> Option<(Sym, Val<B>)> {
         // TODO: use accessor?
         match ty {
@@ -974,7 +974,7 @@ impl Target for CHERIoT {
                 let val = execution::run_function_solver(
                     shared_state,
                     frame,
-                    ctx,
+                    cfg,
                     solver,
                     "capBitsToCapability",
                     vec![Val::Symbolic(tag), Val::Symbolic(content)]
@@ -982,7 +982,7 @@ impl Target for CHERIoT {
                 let assert_val = execution::run_function_solver(
                     shared_state,
                     frame,
-                    ctx,
+                    cfg,
                     solver,
                     "isla_init_cap_property",
                     vec![val.clone()]
@@ -996,15 +996,15 @@ impl Target for CHERIoT {
             _ => None
         }
     }
-    fn special_reg_encode<'ctx, 'ir, B: BV>(
+    fn special_reg_encode<'ir, B: BV>(
         &self,
         reg: &str,
         _acc: &Vec<GVAccessor<String>>,
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
+        cfg: &smt::Config,
+        solver: &mut Solver<B>,
     ) -> Option<Val<B>> {
         // TODO: use accessor?
         let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
@@ -1028,7 +1028,7 @@ impl Target for CHERIoT {
                 let content = execution::run_function_solver(
                     shared_state,
                     frame,
-                    ctx,
+                    cfg,
                     solver,
                     "capToBits",
                     vec![struct_val]

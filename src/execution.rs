@@ -405,7 +405,7 @@ fn postprocess<'ir, B: BV, T: Target>(
 fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, String> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
-    let ctx = smt::Context::new(cfg);
+    let ctx = smt::Context::new(&cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
     match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => (),
@@ -545,7 +545,8 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     no_tags_in_regions: &'ir [Range<Address>],
 ) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<(String, Vec<GVAccessor<String>>), Sym>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
-    let ctx = smt::Context::new(smt::Config::new());
+    let cfg = smt::Config::new();
+    let ctx = smt::Context::new(&cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
     let mut reg_vars = HashMap::new();
 
@@ -562,7 +563,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
             .clone();
         let ty = register_types.get(&ex_var).unwrap();
         let var =
-            if let Some((var,val)) = target.special_reg_init(&reg, &accessor, ty, shared_state, &mut local_frame, &ctx, &mut solver) {
+            if let Some((var,val)) = target.special_reg_init(&reg, &accessor, ty, shared_state, &mut local_frame, &cfg, &mut solver) {
                 ex_val = val;
                 var
             } else {
@@ -613,18 +614,18 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     (freeze_frame(&local_frame), smt::checkpoint(&mut solver), reg_vars)
 }
 
-pub fn run_function_solver<'ctx, 'ir, B: BV>(
+pub fn run_function_solver<'ir, B: BV>(
     shared_state: &SharedState<'ir, B>,
     frame: &mut LocalFrame<'ir, B>,
-    ctx: &'ctx smt::Context,
-    solver: &mut Solver<'ctx, B>,
+    cfg: &smt::Config,
+    solver: &mut Solver<B>,
     function_name: &'ir str,
     args: Vec<Val<B>>,
 ) -> Val<B> {
     let c = smt::checkpoint(solver);
     let (v, ff, cc) = run_function(shared_state, frame, c, function_name, args);
     *frame = ff;
-    *solver = Solver::from_checkpoint(ctx, cc);
+    *solver = Solver::from_checkpoint(&smt::Context::new(cfg), cc);
     v
 }
 
@@ -716,7 +717,7 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
     use isla_lib::smt::smtlib::{Def, Exp, Ty};
     use isla_lib::smt::*;
 
-    let ctx = smt::Context::new(smt::Config::new());
+    let ctx = smt::Context::new(&smt::Config::new());
     let mut solver = Solver::from_checkpoint(&ctx, prev_checkpoint);
 
     let local_frame = executor::unfreeze_frame(frame);

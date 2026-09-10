@@ -308,7 +308,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
-    let ctx = smt::Context::new(cfg);
+    let ctx = smt::Context::new(&cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
 
     // Ensure that we have symbolic values for all of the post-state registers
@@ -325,7 +325,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
             &ty,
             shared_state,
             &mut final_local_frame,
-            &ctx,
+            &cfg,
             &mut solver
         ) {
             final_register_vals.insert((reg,acc), val);
