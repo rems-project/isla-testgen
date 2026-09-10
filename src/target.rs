@@ -35,7 +35,7 @@ use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{Name, SharedState, Ty, Val};
 use isla_lib::primop_util::smt_value;
 use isla_lib::smt;
-use isla_lib::smt::{smtlib, Accessor, Event, Solver, Sym};
+use isla_lib::smt::{smtlib, Accessor, Checkpoint, Event, Solver, Sym};
 use isla_lib::smt::smtlib::{bits64, Exp};
 use isla_lib::source_loc::SourceLoc;
 use isla_lib::zencode;
@@ -74,9 +74,8 @@ where
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
-    ) -> Option<(Sym, Val<B>)>;
+        checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<(Sym, Val<B>)>);
     /// Special encoding for some registers in post-state
     fn special_reg_encode<'ctx, 'ir, B: BV>(
         &self,
@@ -180,9 +179,8 @@ impl Target for Aarch64 {
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
-    ) -> Option<(Sym, Val<B>)> { None }
+        checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<(Sym, Val<B>)>) { (checkpoint, None) }
     fn special_reg_encode<'ctx, 'ir, B: BV>(
         &self,
         _reg: &str,
@@ -417,9 +415,8 @@ impl Target for Morello {
         _ty: &Ty<Name>,
         _shared_state: &SharedState<'ir, B>,
         _frame: &mut LocalFrame<'ir, B>,
-        _ctx: &'ctx smt::Context,
-        _solver: &mut Solver<'ctx, B>,
-    ) -> Option<(Sym, Val<B>)> { None }
+        checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<(Sym, Val<B>)>) { (checkpoint, None) }
     fn special_reg_encode<'ctx, 'ir, B: BV>(
         &self,
         _reg: &str,
@@ -754,29 +751,30 @@ impl Target for X86 {
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
-    ) -> Option<(Sym, Val<B>)> {
+        checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<(Sym, Val<B>)>) {
         // TODO: use accessor?
         match ty {
             Ty::Struct(struct_name) if shared_state.symtab.get("zCapability") == Some(*struct_name) => {
+                let ctx = smt::Context::new(smt::Config::new());
+                let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
                 let var = solver.declare_const(smtlib::Ty::BitVec(129), SourceLoc::unknown());
                 let tag = solver.define_const(
                     Exp::Eq(Box::new(Exp::Extract(128, 128, Box::new(Exp::Var(var)))),
                             Box::new(Exp::Bits64(B64::new(1, 1)))),
                     SourceLoc::unknown());
                 let content = solver.define_const(Exp::Extract(127, 0, Box::new(Exp::Var(var))), SourceLoc::unknown());
-                let val = execution::run_function_solver(
+                let (val, new_frame, new_checkpoint) = execution::run_function(
                     shared_state,
                     frame,
-                    ctx,
-                    solver,
+                    smt::checkpoint(&mut solver),
                     "memBitsToCapability",
                     vec![Val::Symbolic(tag), Val::Symbolic(content)]
                 );
-                Some((var, val))
+                *frame = new_frame;
+                (new_checkpoint, Some((var, val)))
             }
-            _ => None
+            _ => (checkpoint, None)
         }
     }
     fn special_reg_encode<'ctx, 'ir, B: BV>(
@@ -959,41 +957,43 @@ impl Target for CHERIoT {
         ty: &Ty<Name>,
         shared_state: &SharedState<'ir, B>,
         frame: &mut LocalFrame<'ir, B>,
-        ctx: &'ctx smt::Context,
-        solver: &mut Solver<'ctx, B>,
-    ) -> Option<(Sym, Val<B>)> {
+        checkpoint: Checkpoint<B>,
+    ) -> (Checkpoint<B>, Option<(Sym, Val<B>)>) {
         // TODO: use accessor?
         match ty {
             Ty::Struct(struct_name) if shared_state.symtab.get("zCapability") == Some(*struct_name) => {
+                let ctx = smt::Context::new(smt::Config::new());
+                let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
                 let var = solver.declare_const(smtlib::Ty::BitVec(65), SourceLoc::unknown());
                 let tag = solver.define_const(
                     Exp::Eq(Box::new(Exp::Extract(64, 64, Box::new(Exp::Var(var)))),
                             Box::new(Exp::Bits64(B64::new(1, 1)))),
                     SourceLoc::unknown());
                 let content = solver.define_const(Exp::Extract(63, 0, Box::new(Exp::Var(var))), SourceLoc::unknown());
-                let val = execution::run_function_solver(
+                let (val, mut new_frame, checkpoint) = execution::run_function(
                     shared_state,
                     frame,
-                    ctx,
-                    solver,
+                    smt::checkpoint(&mut solver),
                     "capBitsToCapability",
                     vec![Val::Symbolic(tag), Val::Symbolic(content)]
                 );
-                let assert_val = execution::run_function_solver(
+                let (assert_val, new_frame, checkpoint) = execution::run_function(
                     shared_state,
-                    frame,
-                    ctx,
-                    solver,
+                    &mut new_frame,
+                    checkpoint,
                     "isla_init_cap_property",
                     vec![val.clone()]
                 );
+                *frame = new_frame;
+                let ctx = smt::Context::new(smt::Config::new());
+                let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
                 match assert_val {
                     Val::Symbolic(v) => solver.add(smtlib::Def::Assert(Exp::Var(v))),
                     _ => panic!("Bad value from isla_init_cap_property!"),
                 };
-                Some((var, val))
+                (smt::checkpoint(&mut solver), Some((var, val)))
             }
-            _ => None
+            _ => (checkpoint, None)
         }
     }
     fn special_reg_encode<'ctx, 'ir, B: BV>(

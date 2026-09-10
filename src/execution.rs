@@ -538,15 +538,13 @@ fn setup_val<'a, B: BV>(
 pub fn setup_init_regs<'ir, B: BV, T: Target>(
     shared_state: &SharedState<'ir, B>,
     frame: Frame<'ir, B>,
-    checkpoint: Checkpoint<B>,
+    mut checkpoint: Checkpoint<B>,
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
     target: &T,
     no_tags_in_regions: &'ir [Range<Address>],
 ) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<(String, Vec<GVAccessor<String>>), Sym>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
-    let ctx = smt::Context::new(smt::Config::new());
-    let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
     let mut reg_vars = HashMap::new();
 
     for (reg, accessor) in target.regs() {
@@ -554,23 +552,31 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
             .symtab
             .get(&zencode::encode(&reg))
             .unwrap_or_else(|| panic!("Register {} missing during setup", reg));
-        let mut ex_val = local_frame
-            .regs_mut()
-            .get(ex_var, shared_state, &mut solver, SourceLoc::unknown())
-            .unwrap_or_else(|e| panic!("Fail to lookup register {} during setup: {}", reg, e))
-            .unwrap_or_else(|| panic!("No value for register {} during setup", reg))
-            .clone();
         let ty = register_types.get(&ex_var).unwrap();
-        let var =
-            if let Some((var,val)) = target.special_reg_init(&reg, &accessor, ty, shared_state, &mut local_frame, &ctx, &mut solver) {
-                ex_val = val;
-                var
+        let (new_checkpoint, r) = target.special_reg_init(&reg, &accessor, ty, shared_state, &mut local_frame, checkpoint);
+        checkpoint = new_checkpoint;
+        let (var, ex_val) =
+            if let Some((var,val)) = r {
+                (var, val)
             } else {
-                setup_val(shared_state, &mut ex_val, &ty, &accessor, &mut solver)
+                let ctx = smt::Context::new(smt::Config::new());
+                let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
+                let mut ex_val = local_frame
+                    .regs_mut()
+                    .get(ex_var, shared_state, &mut solver, SourceLoc::unknown())
+                    .unwrap_or_else(|e| panic!("Fail to lookup register {} during setup: {}", reg, e))
+                    .unwrap_or_else(|| panic!("No value for register {} during setup", reg))
+                    .clone();
+                let var = setup_val(shared_state, &mut ex_val, &ty, &accessor, &mut solver);
+                checkpoint = smt::checkpoint(&mut solver);
+                (var, ex_val)
             };
         local_frame.regs_mut().assign(ex_var, ex_val, shared_state);
         reg_vars.insert((reg, accessor), var);
     }
+
+    let ctx = smt::Context::new(smt::Config::new());
+    let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
 
     let (pc_str, pc_acc) = target.pc_reg();
     let pc_id = shared_state.symtab.lookup(&pc_str);
