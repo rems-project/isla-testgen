@@ -295,7 +295,7 @@ fn extract_mentioned_registers<B:BV>(events: &[Event<B>]) -> HashSet<Name> {
 pub fn interrogate_model<'ir, B: BV, T: Target>(
     target: &T,
     _isa_config: &ISAConfig<B>,
-    checkpoint: Checkpoint<B>,
+    mut checkpoint: Checkpoint<B>,
     shared_state: &ir::SharedState<'ir, B>,
     _initial_frame: &Frame<'ir, B>,
     final_frame: &Frame<'ir, B>,
@@ -308,8 +308,6 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
 ) -> Result<PrePostStates<'ir, B>, ExecError> {
     let mut cfg = smt::Config::new();
     cfg.set_param_value("model", "true");
-    let ctx = smt::Context::new(cfg);
-    let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
 
     // Ensure that we have symbolic values for all of the post-state registers
     // before we ask for the model, because the target may need to execute
@@ -319,22 +317,29 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
     for (reg, acc) in target.regs() {
         let name = shared_state.symtab.get(&zencode::encode(&reg)).unwrap();
         let ty = apply_accessor_type(shared_state, register_types.get(&name).unwrap(), &acc);
-        if let Some(val) = target.special_reg_encode(
+        let (new_checkpoint, r) = target.special_reg_encode(
             &reg,
             &acc,
             &ty,
             shared_state,
             &mut final_local_frame,
-            &ctx,
-            &mut solver
-        ) {
-            final_register_vals.insert((reg,acc), val);
-        } else {
-            let full_val = final_local_frame.regs().get_last_if_initialized(name).unwrap();
-            let val = apply_accessor_val(shared_state, full_val, &acc);
-            final_register_vals.insert((reg,acc), val.clone());
+            checkpoint,
+        );
+        checkpoint = new_checkpoint;
+        match r {
+            Some(val) => {
+                final_register_vals.insert((reg,acc), val);
+            }
+            None => {
+                let full_val = final_local_frame.regs().get_last_if_initialized(name).unwrap();
+                let val = apply_accessor_val(shared_state, full_val, &acc);
+                final_register_vals.insert((reg,acc), val.clone());
+            }
         }
     }
+
+    let ctx = smt::Context::new(cfg);
+    let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
 
     match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => (),
